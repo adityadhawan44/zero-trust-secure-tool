@@ -1,49 +1,82 @@
 import cors from 'cors';
-import { v2 as cloudinary } from 'cloudinary';
 import express from 'express';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import multer from 'multer';
-import { connectToDatabase, isDatabaseReady } from './db.js';
-import { feedItems, lawyers as demoLawyers } from './data/demoData.js';
-import { ComplaintDraft } from './models/ComplaintDraft.js';
-import { Lawyer } from './models/Lawyer.js';
-import { User } from './models/User.js';
 
 const app = express();
 const port = Number(process.env.PORT || 8788);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distPath = path.resolve(__dirname, '../dist');
-const uploadsPath = path.resolve(__dirname, '../uploads/evidence');
-const inMemoryComplaintDrafts = [];
-const inMemoryUsers = [];
-const otpStore = new Map();
 
-if (process.env.CLOUDINARY_URL) {
-  cloudinary.config({ secure: true });
-}
-
-fs.mkdirSync(uploadsPath, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (_request, _file, callback) => {
-    callback(null, uploadsPath);
+const zonePolicies = [
+  {
+    zone: 'Public Zone',
+    key: 'public',
+    description: 'Marketing pages and policy documentation.',
+    requiredRole: ['guest', 'student', 'teacher', 'admin'],
+    rule: 'Low-friction access with telemetry logging only.',
   },
-  filename: (_request, file, callback) => {
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-    callback(null, `${Date.now()}-${safeName}`);
+  {
+    zone: 'Student Workspace',
+    key: 'student',
+    description: 'Course files, attendance, and assignment systems.',
+    requiredRole: ['student', 'teacher', 'admin'],
+    rule: 'Known device or successful step-up MFA required when risk exceeds baseline.',
   },
-});
+  {
+    zone: 'Faculty Tools',
+    key: 'teacher',
+    description: 'Academic workflows, grading, and moderation.',
+    requiredRole: ['teacher', 'admin'],
+    rule: 'Role + trusted device + medium-risk threshold enforcement.',
+  },
+  {
+    zone: 'Admin Control Plane',
+    key: 'admin',
+    description: 'Identity controls, logs, and sensitive operations.',
+    requiredRole: ['admin'],
+    rule: 'Restricted to college network during approved hours with fresh MFA.',
+  },
+];
 
-const upload = multer({
-  storage,
-  limits: {
-    fileSize: 8 * 1024 * 1024,
-    files: 5,
+const baselineUsers = [
+  {
+    id: 'user-student-01',
+    name: 'Aarav Sharma',
+    email: 'student@zerotrust.demo',
+    password: 'student123',
+    role: 'student',
+    department: 'BCA',
+    knownDevices: ['device-campus-laptop'],
+    typicalLocations: ['Bengaluru, IN'],
+    homeIpPrefix: '10.20.',
   },
-});
+  {
+    id: 'user-teacher-01',
+    name: 'Prof. Kavya Iyer',
+    email: 'teacher@zerotrust.demo',
+    password: 'teacher123',
+    role: 'teacher',
+    department: 'Cyber Security',
+    knownDevices: ['device-faculty-mac'],
+    typicalLocations: ['Bengaluru, IN'],
+    homeIpPrefix: '10.20.',
+  },
+  {
+    id: 'user-admin-01',
+    name: 'Rohan Menon',
+    email: 'admin@zerotrust.demo',
+    password: 'admin123',
+    role: 'admin',
+    department: 'IT Operations',
+    knownDevices: ['device-admin-thinkpad'],
+    typicalLocations: ['Bengaluru, IN'],
+    homeIpPrefix: '10.20.',
+  },
+];
+
+const securityState = createInitialState();
 
 app.use(
   cors({
@@ -51,330 +84,237 @@ app.use(
   }),
 );
 app.use(express.json({ limit: '2mb' }));
-app.use('/uploads', express.static(path.resolve(__dirname, '../uploads')));
 
 app.get('/api/health', (_request, response) => {
   response.json({
     ok: true,
-    app: 'legal-sathi',
+    app: 'zero-trust-access-demo',
     date: new Date().toISOString(),
-    database: isDatabaseReady() ? 'connected' : process.env.MONGODB_URI ? 'configured-not-connected' : 'demo-mode',
-    uploads: process.env.CLOUDINARY_URL ? 'cloudinary' : 'local',
-    otp: hasTwilioConfig() ? 'twilio-verify' : 'mock',
-    payments: hasRazorpayConfig() ? 'razorpay' : 'mock',
+    mode: 'simulation',
   });
 });
 
-app.get('/api/feed', (_request, response) => {
-  response.json({ items: feedItems });
+app.get('/api/zero-trust/bootstrap', (_request, response) => {
+  response.json(buildDashboardPayload());
 });
 
-app.get('/api/users/:id', async (request, response) => {
-  const { id } = request.params;
+app.post('/api/zero-trust/login', (request, response) => {
+  const payload = normalizeLoginPayload(request.body ?? {});
+  const user = baselineUsers.find((entry) => entry.email === payload.email);
 
-  if (isDatabaseReady()) {
-    const user = await User.findById(id).lean();
-    response.json({ item: user });
-    return;
-  }
-
-  const user = inMemoryUsers.find((entry) => entry.id === id) ?? null;
-  response.json({ item: user });
-});
-
-app.post('/api/users/session', async (request, response) => {
-  const payload = normalizeUserPayload(request.body ?? {});
-
-  if (!payload.name || (!payload.email && !payload.phone)) {
-    response.status(400).json({ error: 'Name and either email or phone are required.' });
-    return;
-  }
-
-  if (isDatabaseReady()) {
-    const existingUser = await User.findOne({
-      $or: [
-        ...(payload.email ? [{ email: payload.email }] : []),
-        ...(payload.phone ? [{ phone: payload.phone }] : []),
-      ],
+  if (!user || user.password !== payload.password) {
+    recordAttack({
+      type: 'Brute force attempt',
+      actor: payload.email || 'unknown',
+      prevented: payload.zeroTrustEnabled,
+      severity: 'high',
+      detail: payload.zeroTrustEnabled
+        ? 'Repeated invalid credentials were rate-limited and logged.'
+        : 'Invalid login attempt would blend into a perimeter-only model.',
     });
 
-    const user = existingUser
-      ? await User.findByIdAndUpdate(existingUser._id, payload, { new: true })
-      : await User.create(payload);
-
-    response.json({ item: user });
-    return;
-  }
-
-  const existingUser = inMemoryUsers.find((entry) => entry.email === payload.email || entry.phone === payload.phone);
-  if (existingUser) {
-    Object.assign(existingUser, payload);
-    response.json({ item: existingUser });
-    return;
-  }
-
-  const user = { id: `demo-user-${Date.now()}`, createdAt: new Date().toISOString(), ...payload };
-  inMemoryUsers.push(user);
-  response.json({ item: user });
-});
-
-app.post('/api/auth/otp/send', async (request, response) => {
-  const phone = String(request.body?.phone || '').trim();
-
-  if (!phone) {
-    response.status(400).json({ error: 'Phone is required.' });
-    return;
-  }
-
-  if (hasTwilioConfig()) {
-    const verification = await sendTwilioVerification(phone);
-    response.json({
-      mode: 'twilio-verify',
-      status: verification.status ?? 'pending',
-      to: phone,
+    response.status(401).json({
+      status: 'denied',
+      message: 'Invalid credentials.',
+      event: latestEvent(),
+      dashboard: buildDashboardPayload(),
     });
     return;
   }
 
-  const code = `${Math.floor(100000 + Math.random() * 900000)}`;
-  otpStore.set(phone, {
-    code,
-    expiresAt: Date.now() + 10 * 60 * 1000,
-  });
-  response.json({
-    mode: 'mock',
-    status: 'pending',
-    to: phone,
-    code,
-  });
-});
-
-app.post('/api/auth/otp/verify', async (request, response) => {
-  const phone = String(request.body?.phone || '').trim();
-  const code = String(request.body?.code || '').trim();
-  const userId = String(request.body?.userId || '').trim();
-
-  if (!phone || !code) {
-    response.status(400).json({ error: 'Phone and code are required.' });
-    return;
-  }
-
-  let approved = false;
-
-  if (hasTwilioConfig()) {
-    const verificationCheck = await verifyTwilioCode(phone, code);
-    approved = Boolean(verificationCheck.valid) || verificationCheck.status === 'approved';
-  } else {
-    const entry = otpStore.get(phone);
-    approved = Boolean(entry && entry.code === code && entry.expiresAt > Date.now());
-    if (approved) {
-      otpStore.delete(phone);
-    }
-  }
-
-  if (!approved) {
-    response.status(400).json({ error: 'Invalid or expired OTP.' });
-    return;
-  }
-
-  let updatedUser = null;
-  if (userId) {
-    if (isDatabaseReady()) {
-      updatedUser = await User.findByIdAndUpdate(
-        userId,
-        { verifiedPhone: true, lastVerifiedAt: new Date() },
-        { new: true },
-      );
-    } else {
-      const target = inMemoryUsers.find((entry) => entry.id === userId);
-      if (target) {
-        target.verifiedPhone = true;
-        target.lastVerifiedAt = new Date().toISOString();
-        updatedUser = target;
-      }
-    }
-  }
-
-  response.json({
-    status: 'approved',
-    item: updatedUser,
-  });
-});
-
-app.get('/api/lawyers', async (request, response) => {
-  const city = String(request.query.city || '').toLowerCase();
-  const specialization = String(request.query.specialization || '').toLowerCase();
-  const search = String(request.query.search || '').toLowerCase();
-
-  const items = isDatabaseReady()
-    ? await Lawyer.find(buildLawyerQuery({ city, specialization, search }))
-        .sort({ verified: -1, rating: -1, createdAt: -1 })
-        .lean()
-    : filterLawyers(demoLawyers, { city, specialization, search }).map((lawyer, index) => ({
-        id: `demo-lawyer-${index + 1}`,
-        ...lawyer,
-      }));
-
-  response.json({ items });
-});
-
-app.post('/api/lawyers', async (request, response) => {
-  const payload = normalizeLawyerPayload(request.body ?? {});
-
-  if (!payload.name || !payload.city || !payload.specialization || !payload.fee || !payload.availability || !payload.about || !payload.email || !payload.phone) {
-    response.status(400).json({ error: 'Name, email, phone, city, specialization, fee, availability, and about are required.' });
-    return;
-  }
-
-  if (!isDatabaseReady()) {
-    response.status(503).json({
-      error: 'MongoDB is not connected. Add MONGODB_URI to enable lawyer persistence.',
-    });
-    return;
-  }
-
-  const createdLawyer = await Lawyer.create(payload);
-  response.status(201).json({ item: createdLawyer });
-});
-
-app.post('/api/uploads/evidence', upload.array('files', 5), async (request, response) => {
-  const files = request.files ?? [];
-
-  const uploadedFiles = process.env.CLOUDINARY_URL
-    ? await Promise.all(
-        files.map(async (file) => {
-          const result = await cloudinary.uploader.upload(file.path, {
-            resource_type: 'auto',
-            folder: 'legal-sathi/evidence',
-          });
-          try {
-            fs.unlinkSync(file.path);
-          } catch {}
-
-          return {
-            originalName: file.originalname,
-            storedName: result.public_id,
-            url: result.secure_url,
-            mimeType: file.mimetype,
-            size: file.size,
-          };
-        }),
-      )
-    : files.map((file) => ({
-        originalName: file.originalname,
-        storedName: file.filename,
-        url: `/uploads/evidence/${file.filename}`,
-        mimeType: file.mimetype,
-        size: file.size,
-      }));
-
-  response.status(201).json({ items: uploadedFiles });
-});
-
-app.post('/api/payments/order', async (request, response) => {
-  const amount = Number(request.body?.amount || 0);
-  const receipt = String(request.body?.receipt || `consultation-${Date.now()}`);
-  const notes = request.body?.notes ?? {};
-
-  if (!Number.isFinite(amount) || amount <= 0) {
-    response.status(400).json({ error: 'A positive amount is required.' });
-    return;
-  }
-
-  if (hasRazorpayConfig()) {
-    const razorpayOrder = await createRazorpayOrder({ amount, receipt, notes });
-    response.status(201).json({
-      mode: 'razorpay',
-      keyId: process.env.RAZORPAY_KEY_ID,
-      order: razorpayOrder,
-    });
-    return;
-  }
-
-  response.status(201).json({
-    mode: 'mock',
-    keyId: 'rzp_test_mock',
-    order: {
-      id: `order_mock_${Date.now()}`,
-      amount,
-      currency: 'INR',
-      receipt,
-      notes,
-      status: 'created',
-    },
-  });
-});
-
-app.get('/api/complaints', async (_request, response) => {
-  const items = isDatabaseReady()
-    ? await ComplaintDraft.find().sort({ createdAt: -1 }).limit(20).lean()
-    : inMemoryComplaintDrafts.slice().reverse();
-
-  response.json({ items });
-});
-
-app.post('/api/legal-assistant', async (request, response) => {
-  const prompt = String(request.body?.prompt || '').trim();
-
-  if (!prompt) {
-    response.status(400).json({ error: 'Prompt is required.' });
-    return;
-  }
-
-  try {
-    const aiResult = await maybeGenerateLegalAdvice(prompt);
-    response.json(aiResult ?? legalFallback(prompt));
-  } catch (error) {
-    response.json(legalFallback(prompt, error instanceof Error ? error.message : 'Unknown error'));
-  }
-});
-
-app.post('/api/complaints/draft', async (request, response) => {
-  const payload = {
-    userId: String(request.body?.userId || '').trim(),
-    incidentType: String(request.body?.incidentType || '').trim(),
-    location: String(request.body?.location || '').trim(),
-    summary: String(request.body?.summary || '').trim(),
-    evidence: String(request.body?.evidence || '').trim(),
-    evidenceFiles: Array.isArray(request.body?.evidenceFiles) ? request.body.evidenceFiles : [],
-    accusedKnown: Boolean(request.body?.accusedKnown),
-  };
-
-  if (!payload.incidentType || !payload.location || !payload.summary) {
-    response.status(400).json({ error: 'Incident type, location, and summary are required.' });
-    return;
-  }
-
-  const mapped = legalFallback(`${payload.incidentType}. ${payload.summary}`);
-  const draft = {
-    title: `Draft complaint for ${payload.incidentType}`,
-    userId: payload.userId || undefined,
-    incidentType: payload.incidentType,
+  const risk = scoreRisk(user, payload);
+  const requiresMfa = risk.score >= 55 || !risk.deviceTrusted || payload.ipAddress !== `${user.homeIpPrefix}44.18`;
+  const sessionId = `session-${Date.now()}`;
+  const policyDecision = evaluateZoneAccess({
+    requestedZone: payload.requestedZone,
+    role: user.role,
     location: payload.location,
-    summary: payload.summary,
-    evidence: payload.evidence,
-    evidenceFiles: payload.evidenceFiles,
-    accusedKnown: payload.accusedKnown,
-    complaintType: mapped.category,
-    sections: mapped.laws,
-    nextSteps: mapped.nextSteps,
-    filingChannels: mapped.filingChannels,
-    firDraft: createFirDraft(payload, mapped),
+    deviceTrusted: risk.deviceTrusted,
+    mfaSatisfied: !requiresMfa,
+    loginHour: payload.loginHour,
+  });
+
+  const session = {
+    id: sessionId,
+    userId: user.id,
+    userName: user.name,
+    role: user.role,
+    location: payload.location,
+    ipAddress: payload.ipAddress,
+    deviceId: payload.deviceId,
+    deviceTrusted: risk.deviceTrusted,
+    riskScore: risk.score,
+    riskLevel: risk.level,
+    mfaRequired: requiresMfa,
+    mfaCompleted: false,
+    requestedZone: payload.requestedZone,
+    zoneDecision: policyDecision.allowed ? 'pending-mfa' : 'denied',
+    policyReasons: policyDecision.reasons,
+    createdAt: new Date().toISOString(),
   };
 
-  if (isDatabaseReady()) {
-    const savedDraft = await ComplaintDraft.create(draft);
-    response.json(savedDraft);
+  securityState.sessions.unshift(session);
+
+  recordEvent({
+    kind: requiresMfa ? 'Step-up MFA triggered' : 'Session created',
+    severity: requiresMfa ? 'medium' : 'low',
+    user: user.name,
+    zone: payload.requestedZone,
+    result: requiresMfa ? 'challenge' : policyDecision.allowed ? 'allowed' : 'blocked',
+    detail: risk.summary,
+  });
+
+  response.json({
+    status: requiresMfa ? 'mfa_required' : policyDecision.allowed ? 'allowed' : 'denied',
+    session,
+    policyDecision,
+    risk,
+    mfaCode: requiresMfa ? '482911' : null,
+    dashboard: buildDashboardPayload(),
+  });
+});
+
+app.post('/api/zero-trust/mfa/verify', (request, response) => {
+  const sessionId = String(request.body?.sessionId || '').trim();
+  const code = String(request.body?.code || '').trim();
+  const session = securityState.sessions.find((entry) => entry.id === sessionId);
+
+  if (!session) {
+    response.status(404).json({ error: 'Session not found.' });
     return;
   }
 
-  const inMemoryDraft = {
-    id: `demo-complaint-${Date.now()}`,
-    createdAt: new Date().toISOString(),
-    ...draft,
-  };
-  inMemoryComplaintDrafts.push(inMemoryDraft);
-  response.json(inMemoryDraft);
+  if (code !== '482911') {
+    recordEvent({
+      kind: 'MFA verification failed',
+      severity: 'high',
+      user: session.userName,
+      zone: session.requestedZone,
+      result: 'blocked',
+      detail: 'Invalid step-up code submitted for elevated-risk session.',
+    });
+    response.status(400).json({
+      status: 'denied',
+      message: 'Invalid OTP.',
+      dashboard: buildDashboardPayload(),
+    });
+    return;
+  }
+
+  session.mfaCompleted = true;
+  const finalDecision = evaluateZoneAccess({
+    requestedZone: session.requestedZone,
+    role: session.role,
+    location: session.location,
+    deviceTrusted: session.deviceTrusted,
+    mfaSatisfied: true,
+    loginHour: new Date().getHours(),
+  });
+  session.zoneDecision = finalDecision.allowed ? 'allowed' : 'denied';
+
+  recordEvent({
+    kind: finalDecision.allowed ? 'MFA verified' : 'Post-MFA policy block',
+    severity: finalDecision.allowed ? 'low' : 'high',
+    user: session.userName,
+    zone: session.requestedZone,
+    result: finalDecision.allowed ? 'allowed' : 'blocked',
+    detail: finalDecision.allowed
+      ? 'User satisfied step-up authentication and entered the requested zone.'
+      : finalDecision.reasons.join(' '),
+  });
+
+  response.json({
+    status: finalDecision.allowed ? 'allowed' : 'denied',
+    session,
+    policyDecision: finalDecision,
+    dashboard: buildDashboardPayload(),
+  });
+});
+
+app.post('/api/zero-trust/session/recheck', (request, response) => {
+  const sessionId = String(request.body?.sessionId || '').trim();
+  const scenario = String(request.body?.scenario || 'stable').trim();
+  const session = securityState.sessions.find((entry) => entry.id === sessionId);
+
+  if (!session) {
+    response.status(404).json({ error: 'Session not found.' });
+    return;
+  }
+
+  let outcome;
+
+  if (scenario === 'ip_shift') {
+    session.riskScore = Math.min(98, session.riskScore + 26);
+    session.riskLevel = classifyRisk(session.riskScore);
+    session.zoneDecision = 'step-up';
+    outcome = {
+      status: 'step_up_required',
+      title: 'Suspicious network shift detected',
+      message: 'Continuous authentication noticed a sudden IP change and paused privileged access.',
+    };
+  } else if (scenario === 'behavior_anomaly') {
+    session.riskScore = Math.min(95, session.riskScore + 18);
+    session.riskLevel = classifyRisk(session.riskScore);
+    session.zoneDecision = 'limited';
+    outcome = {
+      status: 'limited_access',
+      title: 'Behavioral anomaly flagged',
+      message: 'Unusual navigation speed triggered a policy downgrade and extra monitoring.',
+    };
+  } else {
+    session.riskScore = Math.max(8, session.riskScore - 4);
+    session.riskLevel = classifyRisk(session.riskScore);
+    outcome = {
+      status: 'healthy',
+      title: 'Session healthy',
+      message: 'Telemetry remains consistent with the trusted baseline.',
+    };
+  }
+
+  recordEvent({
+    kind: 'Continuous authentication check',
+    severity: outcome.status === 'healthy' ? 'low' : 'medium',
+    user: session.userName,
+    zone: session.requestedZone,
+    result: outcome.status,
+    detail: outcome.message,
+  });
+
+  response.json({
+    session,
+    outcome,
+    dashboard: buildDashboardPayload(),
+  });
+});
+
+app.post('/api/zero-trust/access-check', (request, response) => {
+  const decision = evaluateZoneAccess({
+    requestedZone: String(request.body?.requestedZone || 'public'),
+    role: String(request.body?.role || 'guest'),
+    location: String(request.body?.location || 'Remote'),
+    deviceTrusted: Boolean(request.body?.deviceTrusted),
+    mfaSatisfied: Boolean(request.body?.mfaSatisfied),
+    loginHour: Number(request.body?.loginHour ?? 12),
+  });
+
+  response.json({ decision });
+});
+
+app.post('/api/zero-trust/attacks/simulate', (request, response) => {
+  const attackType = String(request.body?.attackType || '').trim();
+  const zeroTrustEnabled = Boolean(request.body?.zeroTrustEnabled);
+  const result = simulateAttack(attackType, zeroTrustEnabled);
+  recordAttack(result);
+
+  response.json({
+    result,
+    dashboard: buildDashboardPayload(),
+  });
+});
+
+app.post('/api/zero-trust/reset', (_request, response) => {
+  Object.assign(securityState, createInitialState());
+  response.json(buildDashboardPayload());
 });
 
 if (process.env.NODE_ENV === 'production') {
@@ -384,440 +324,272 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-void bootstrap();
+app.listen(port, () => {
+  console.log(`Zero Trust demo server running on http://localhost:${port}`);
+});
 
-async function bootstrap() {
-  await connectToDatabase();
-
-  if (isDatabaseReady()) {
-    await seedLawyersIfEmpty();
-  }
-
-  app.listen(port, () => {
-    console.log(`Legal Sathi server running on http://localhost:${port}`);
-  });
-}
-
-async function seedLawyersIfEmpty() {
-  const existingCount = await Lawyer.countDocuments();
-  if (existingCount === 0) {
-    await Lawyer.insertMany(demoLawyers);
-  }
-}
-
-function normalizeLawyerPayload(payload) {
+function createInitialState() {
   return {
-    name: String(payload.name || '').trim(),
+    sessions: [],
+    events: [
+      {
+        id: 'evt-seed-1',
+        time: new Date(Date.now() - 1000 * 60 * 18).toISOString(),
+        kind: 'Trusted admin sign-in',
+        severity: 'low',
+        user: 'Rohan Menon',
+        zone: 'admin',
+        result: 'allowed',
+        detail: 'Known device, campus IP, and fresh MFA allowed access.',
+      },
+      {
+        id: 'evt-seed-2',
+        time: new Date(Date.now() - 1000 * 60 * 9).toISOString(),
+        kind: 'Impossible travel blocked',
+        severity: 'high',
+        user: 'Aarav Sharma',
+        zone: 'student',
+        result: 'blocked',
+        detail: 'Login attempt from a new geography was denied pending identity proof.',
+      },
+      {
+        id: 'evt-seed-3',
+        time: new Date(Date.now() - 1000 * 60 * 4).toISOString(),
+        kind: 'Session re-check',
+        severity: 'medium',
+        user: 'Prof. Kavya Iyer',
+        zone: 'teacher',
+        result: 'limited_access',
+        detail: 'Abnormal behavior reduced privileges until re-verification.',
+      },
+    ],
+    attacks: [
+      simulateAttack('brute_force', true, true),
+      simulateAttack('session_hijack', true, true),
+      simulateAttack('admin_bypass', false, true),
+    ],
+  };
+}
+
+function buildDashboardPayload() {
+  const totals = {
+    successfulLogins: securityState.sessions.filter((entry) => entry.zoneDecision === 'allowed').length + 24,
+    blockedAttempts:
+      securityState.events.filter((entry) => entry.result === 'blocked').length +
+      securityState.attacks.filter((entry) => entry.prevented).length,
+    stepUpChallenges:
+      securityState.sessions.filter((entry) => entry.mfaRequired).length +
+      securityState.events.filter((entry) => entry.kind.includes('MFA')).length,
+    trustedDevices: new Set(baselineUsers.flatMap((user) => user.knownDevices)).size,
+  };
+
+  return {
+    users: baselineUsers.map(({ password, ...user }) => user),
+    zonePolicies,
+    metrics: totals,
+    activeSessions: securityState.sessions.slice(0, 5),
+    recentEvents: securityState.events.slice(0, 8),
+    attackResults: securityState.attacks.slice(0, 6),
+    charts: {
+      loginActivity: [
+        { label: 'Mon', success: 12, failed: 4 },
+        { label: 'Tue', success: 14, failed: 5 },
+        { label: 'Wed', success: 17, failed: 6 },
+        { label: 'Thu', success: 18, failed: 3 },
+        { label: 'Fri', success: 16, failed: 7 },
+        { label: 'Sat', success: 10, failed: 2 },
+      ],
+      deviceTrust: [
+        { label: 'Trusted', value: 68 },
+        { label: 'Unknown', value: 22 },
+        { label: 'Quarantined', value: 10 },
+      ],
+      riskDistribution: [
+        { label: 'Low', value: 51 },
+        { label: 'Medium', value: 31 },
+        { label: 'High', value: 18 },
+      ],
+    },
+    demoCredentials: baselineUsers.map((user) => ({
+      email: user.email,
+      password: user.password,
+      role: user.role,
+    })),
+  };
+}
+
+function normalizeLoginPayload(payload) {
+  return {
     email: String(payload.email || '').trim().toLowerCase(),
-    phone: String(payload.phone || '').trim(),
-    city: String(payload.city || '').trim(),
-    languages: Array.isArray(payload.languages)
-      ? payload.languages.map((item) => String(item).trim()).filter(Boolean)
-      : String(payload.languages || '')
-          .split(',')
-          .map((item) => item.trim())
-          .filter(Boolean),
-    specialization: String(payload.specialization || '').trim(),
-    services: Array.isArray(payload.services)
-      ? payload.services.map((item) => String(item).trim()).filter(Boolean)
-      : String(payload.services || '')
-          .split(',')
-          .map((item) => item.trim())
-          .filter(Boolean),
-    barCouncilNumber: String(payload.barCouncilNumber || '').trim(),
-    practiceYears: Number(payload.practiceYears || 0),
-    rating: Number(payload.rating || 0),
-    verified: Boolean(payload.verified),
-    onboardingStatus: String(payload.onboardingStatus || 'submitted').trim(),
-    fee: String(payload.fee || '').trim(),
-    availability: String(payload.availability || '').trim(),
-    about: String(payload.about || '').trim(),
+    password: String(payload.password || '').trim(),
+    deviceId: String(payload.deviceId || 'unknown-device').trim(),
+    location: String(payload.location || 'Remote').trim(),
+    ipAddress: String(payload.ipAddress || '203.0.113.42').trim(),
+    loginHour: Number(payload.loginHour ?? 11),
+    requestedZone: String(payload.requestedZone || 'student').trim(),
+    zeroTrustEnabled: Boolean(payload.zeroTrustEnabled),
   };
 }
 
-function normalizeUserPayload(payload) {
-  return {
-    name: String(payload.name || '').trim(),
-    email: String(payload.email || '').trim().toLowerCase(),
-    phone: String(payload.phone || '').trim(),
-    city: String(payload.city || '').trim(),
-    verifiedPhone: Boolean(payload.verifiedPhone),
-    role: payload.role === 'lawyer' ? 'lawyer' : 'citizen',
-  };
-}
+function scoreRisk(user, payload) {
+  let score = 12;
+  const reasons = [];
+  const deviceTrusted = user.knownDevices.includes(payload.deviceId);
+  const familiarLocation = user.typicalLocations.includes(payload.location);
+  const campusIp = payload.ipAddress.startsWith(user.homeIpPrefix);
 
-function hasTwilioConfig() {
-  return Boolean(
-    process.env.TWILIO_ACCOUNT_SID &&
-      process.env.TWILIO_AUTH_TOKEN &&
-      process.env.TWILIO_VERIFY_SERVICE_SID,
-  );
-}
-
-function hasRazorpayConfig() {
-  return Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET);
-}
-
-async function sendTwilioVerification(phone) {
-  const body = new URLSearchParams({
-    To: phone,
-    Channel: 'sms',
-  });
-
-  const response = await fetch(
-    `https://verify.twilio.com/v2/Services/${process.env.TWILIO_VERIFY_SERVICE_SID}/Verifications`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${Buffer.from(
-          `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`,
-        ).toString('base64')}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body,
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error('Twilio verification request failed');
+  if (!deviceTrusted) {
+    score += 30;
+    reasons.push('New device fingerprint detected.');
   }
 
-  return response.json();
-}
-
-async function verifyTwilioCode(phone, code) {
-  const body = new URLSearchParams({
-    To: phone,
-    Code: code,
-  });
-
-  const response = await fetch(
-    `https://verify.twilio.com/v2/Services/${process.env.TWILIO_VERIFY_SERVICE_SID}/VerificationCheck`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${Buffer.from(
-          `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`,
-        ).toString('base64')}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body,
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error('Twilio verification check failed');
+  if (!familiarLocation) {
+    score += 18;
+    reasons.push('Location differs from the established pattern.');
   }
 
-  return response.json();
-}
-
-async function createRazorpayOrder({ amount, receipt, notes }) {
-  const response = await fetch('https://api.razorpay.com/v1/orders', {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${Buffer.from(
-        `${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`,
-      ).toString('base64')}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      amount,
-      currency: 'INR',
-      receipt,
-      notes,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error('Razorpay order creation failed');
+  if (!campusIp) {
+    score += 16;
+    reasons.push('Network origin is outside the expected campus range.');
   }
 
-  return response.json();
-}
-
-function buildLawyerQuery({ city, specialization, search }) {
-  const query = {};
-
-  if (city) {
-    query.city = { $regex: escapeRegex(city), $options: 'i' };
+  if (payload.loginHour >= 22 || payload.loginHour <= 5) {
+    score += 14;
+    reasons.push('Attempt happened during restricted hours.');
   }
 
-  if (specialization) {
-    query.specialization = { $regex: escapeRegex(specialization), $options: 'i' };
-  }
-
-  if (search) {
-    query.$or = [
-      { name: { $regex: escapeRegex(search), $options: 'i' } },
-      { city: { $regex: escapeRegex(search), $options: 'i' } },
-      { specialization: { $regex: escapeRegex(search), $options: 'i' } },
-      { languages: { $elemMatch: { $regex: escapeRegex(search), $options: 'i' } } },
-    ];
-  }
-
-  return query;
-}
-
-function filterLawyers(items, { city, specialization, search }) {
-  return items.filter((lawyer) => {
-    const matchesCity = !city || lawyer.city.toLowerCase().includes(city);
-    const matchesSpecialization = !specialization || lawyer.specialization.toLowerCase().includes(specialization);
-    const haystack = `${lawyer.name} ${lawyer.city} ${lawyer.specialization} ${lawyer.languages.join(' ')}`.toLowerCase();
-    const matchesSearch = !search || haystack.includes(search);
-    return matchesCity && matchesSpecialization && matchesSearch;
-  });
-}
-
-function escapeRegex(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-async function maybeGenerateLegalAdvice(prompt) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return null;
-  }
-
-  const result = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      input: [
-        {
-          role: 'system',
-          content: [
-            {
-              type: 'input_text',
-              text:
-                'You are an India-focused legal triage assistant. Do not claim to be a lawyer. Return strict JSON only. Prefer practical, non-alarmist guidance. Cite only likely laws, never fabricate certainty.',
-            },
-          ],
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: prompt,
-            },
-          ],
-        },
-      ],
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'legal_triage',
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              category: { type: 'string' },
-              severity: { type: 'string' },
-              summary: { type: 'string' },
-              laws: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  additionalProperties: false,
-                  properties: {
-                    label: { type: 'string' },
-                    reason: { type: 'string' },
-                  },
-                  required: ['label', 'reason'],
-                },
-              },
-              immediateActions: {
-                type: 'array',
-                items: { type: 'string' },
-              },
-              nextSteps: {
-                type: 'array',
-                items: { type: 'string' },
-              },
-              filingChannels: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  additionalProperties: false,
-                  properties: {
-                    label: { type: 'string' },
-                    url: { type: 'string' },
-                  },
-                  required: ['label', 'url'],
-                },
-              },
-              disclaimer: { type: 'string' },
-            },
-            required: [
-              'category',
-              'severity',
-              'summary',
-              'laws',
-              'immediateActions',
-              'nextSteps',
-              'filingChannels',
-              'disclaimer',
-            ],
-          },
-        },
-      },
-    }),
-  });
-
-  if (!result.ok) {
-    throw new Error('OpenAI request failed');
-  }
-
-  const data = await result.json();
-  const content = data.output?.[0]?.content?.[0]?.text;
-  return content ? JSON.parse(content) : null;
-}
-
-function legalFallback(prompt, note) {
-  const text = prompt.toLowerCase();
-  const base = {
-    severity: 'Act quickly',
-    disclaimer:
-      'This is general legal information for triage, not a substitute for a licensed advocate or police direction.',
-    filingChannels: [
-      {
-        label: 'National Cyber Crime Reporting Portal',
-        url: 'https://www.cybercrime.gov.in/',
-      },
-      {
-        label: 'Digital Police Portal',
-        url: 'https://digitalpolice.gov.in/',
-      },
-    ],
-  };
-
-  if (text.includes('scam') || text.includes('fraud') || text.includes('upi') || text.includes('online payment')) {
-    return {
-      ...base,
-      category: 'Cyber fraud / cheating',
-      summary: note
-        ? `Fallback guidance used because live AI was unavailable: ${note}`
-        : 'This looks like a deception-based money or property loss. Preserve transaction proof and report immediately, especially if the transfer is recent.',
-      laws: [
-        {
-          label: 'BNS Section 318 - Cheating',
-          reason: 'Used where deception dishonestly induces delivery of money, property, or a harmful act.',
-        },
-      ],
-      immediateActions: [
-        'Call 1930 immediately if the fraud is recent and financial.',
-        'Take screenshots of chats, UPI IDs, bank alerts, URLs, and merchant details.',
-        'Do not delete the app, message thread, or call log linked to the incident.',
-      ],
-      nextSteps: [
-        'File on the National Cyber Crime Reporting Portal.',
-        'Keep transaction ID, UTR number, amount, date, and suspect identifier ready.',
-        'If money is substantial or threats continue, also approach the local police station.',
-      ],
-    };
-  }
-
-  if (text.includes('snatch') || text.includes('snatching')) {
-    return {
-      ...base,
-      category: 'Property offence / snatching',
-      summary: 'This appears closer to a forceful property-taking incident and should be treated as an urgent police complaint.',
-      laws: [
-        {
-          label: 'BNS Section 304 - Snatching',
-          reason: 'Used where property is suddenly taken from a person in a direct snatching incident.',
-        },
-      ],
-      immediateActions: [
-        'Note the exact place, time, route, and direction in which the accused fled.',
-        'Preserve CCTV leads, eyewitness contacts, and device IMEI or serial number.',
-        'Block bank cards, SIM, and linked wallets if a phone or wallet was taken.',
-      ],
-      nextSteps: [
-        'Visit the nearest police station or use state police citizen services where available.',
-        'Request the complaint or FIR acknowledgement number.',
-        'Track device blocking and linked financial misuse immediately.',
-      ],
-    };
-  }
-
-  if (text.includes('stole') || text.includes('stolen') || text.includes('theft')) {
-    return {
-      ...base,
-      category: 'Property offence / theft',
-      summary: 'This appears to be a theft matter. The strongest early evidence is ownership proof, location details, and timeline consistency.',
-      laws: [
-        {
-          label: 'BNS Section 303 - Theft',
-          reason: 'Used for dishonest taking of movable property without consent.',
-        },
-      ],
-      immediateActions: [
-        'Collect purchase proof, IMEI, vehicle number, or ownership records.',
-        'Write down when you last saw the property and where it went missing.',
-        'Check nearby CCTV points before footage is overwritten.',
-      ],
-      nextSteps: [
-        'File a police complaint with serial numbers and proof of ownership.',
-        'If the theft happened in a home, vehicle, or place of worship, tell the officer clearly because aggravated provisions may matter.',
-        'Store a digital copy of the complaint acknowledgement.',
-      ],
-    };
-  }
-
-  if (text.includes('blackmail') || text.includes('extort') || text.includes('threaten me for money')) {
-    return {
-      ...base,
-      category: 'Extortion / coercion',
-      summary: 'This looks like an extortion-type scenario. Preserve the threats exactly as received and avoid negotiating beyond what is needed for safety.',
-      laws: [
-        {
-          label: 'BNS Section 308 - Extortion',
-          reason: 'Used when property or money is induced through fear or coercive pressure.',
-        },
-      ],
-      immediateActions: [
-        'Keep the original chats, recordings, screenshots, and account details.',
-        'Do not edit or crop the evidence.',
-        'If there is a risk of immediate harm, contact 112 and local police at once.',
-      ],
-      nextSteps: [
-        'File a complaint with the threat timeline and payment demands.',
-        'Ask a lawyer to review whether urgent protective steps are needed.',
-        'If the threat moved online, also file through the cybercrime portal.',
-      ],
-    };
+  if (payload.requestedZone === 'admin') {
+    score += 12;
+    reasons.push('Privileged control-plane access requested.');
   }
 
   return {
-    ...base,
-    category: 'General legal triage',
-    summary:
-      'Your situation may involve multiple laws. Start by preserving evidence, documenting a clear timeline, and choosing the correct complaint channel based on whether the issue is cyber-related or local-station based.',
-    laws: [
-      {
-        label: 'Needs fact-based legal review',
-        reason: 'The fallback engine only maps a narrow set of common categories safely.',
-      },
-    ],
-    immediateActions: [
-      'Write down what happened in chronological order.',
-      'Collect screenshots, IDs, receipts, witness names, and location details.',
-      'If there is immediate danger, call 112 or go to the nearest police station.',
-    ],
-    nextSteps: [
-      'Use Ask AI for a more detailed narrative or consult a lawyer from the marketplace.',
-      'Choose the cybercrime portal for online offences and police channels for non-cyber offences.',
-      'Keep all acknowledgement numbers and copies of submitted evidence.',
-    ],
+    score,
+    level: classifyRisk(score),
+    deviceTrusted,
+    summary: reasons.length > 0 ? reasons.join(' ') : 'Known device, expected network, and normal behavior.',
   };
 }
 
-function createFirDraft(payload, mapped) {
-  return `To,\nThe Station House Officer\n${payload.location}\n\nSubject: Complaint regarding ${payload.incidentType}\n\nRespected Sir/Madam,\n\nI wish to lodge a complaint regarding an incident of ${payload.incidentType}. The incident took place in or around ${payload.location}.\n\nBrief facts:\n${payload.summary}\n\nEvidence available:\n${payload.evidence || 'I will provide available supporting documents, screenshots, and identifiers during filing.'}\n\nWhether accused is known:\n${payload.accusedKnown ? 'Yes, the accused is known or partly identifiable.' : 'No, the accused is not clearly identified at this stage.'}\n\nBased on the available facts, the matter may require examination under the following likely legal heads:\n${mapped.laws.map((law) => `- ${law.label}: ${law.reason}`).join('\n')}\n\nI request you to kindly take appropriate legal action, register my complaint/FIR as applicable, and provide an acknowledgement.\n\nSincerely,\n[Your Name]\n[Mobile Number]\n[Address]\n[Date]`;
+function classifyRisk(score) {
+  if (score >= 70) return 'high';
+  if (score >= 40) return 'medium';
+  return 'low';
+}
+
+function evaluateZoneAccess({ requestedZone, role, location, deviceTrusted, mfaSatisfied, loginHour }) {
+  const reasons = [];
+  const zone = zonePolicies.find((entry) => entry.key === requestedZone) ?? zonePolicies[0];
+
+  if (!zone.requiredRole.includes(role)) {
+    reasons.push(`Role ${role} is not permitted inside ${zone.zone}.`);
+  }
+
+  if (requestedZone === 'admin') {
+    if (!location.toLowerCase().includes('bengaluru')) {
+      reasons.push('Admin zone is limited to the college network and approved geography.');
+    }
+    if (loginHour >= 22 || loginHour <= 5) {
+      reasons.push('Admin access outside approved hours is blocked.');
+    }
+    if (!mfaSatisfied) {
+      reasons.push('Fresh MFA is required for the admin zone.');
+    }
+  }
+
+  if ((requestedZone === 'student' || requestedZone === 'teacher') && !deviceTrusted && !mfaSatisfied) {
+    reasons.push('Unknown device must complete step-up authentication before entry.');
+  }
+
+  return {
+    allowed: reasons.length === 0,
+    zone,
+    reasons: reasons.length > 0 ? reasons : ['Policy requirements satisfied.'],
+  };
+}
+
+function simulateAttack(attackType, zeroTrustEnabled, seeded = false) {
+  const catalog = {
+    brute_force: {
+      name: 'Brute force login',
+      enabled: {
+        prevented: true,
+        severity: 'high',
+        narrative: 'Rate limits, adaptive MFA, and anomaly tracking throttled repeated credential abuse.',
+      },
+      disabled: {
+        prevented: false,
+        severity: 'critical',
+        narrative: 'Without adaptive controls, repeated guesses reached the login surface unchecked.',
+      },
+    },
+    session_hijack: {
+      name: 'Session hijacking',
+      enabled: {
+        prevented: true,
+        severity: 'critical',
+        narrative: 'The stolen session was invalidated after IP drift and device mismatch triggered continuous authentication.',
+      },
+      disabled: {
+        prevented: false,
+        severity: 'critical',
+        narrative: 'A perimeter-only design would keep the session alive after token theft.',
+      },
+    },
+    admin_bypass: {
+      name: 'Unauthorized admin access',
+      enabled: {
+        prevented: true,
+        severity: 'critical',
+        narrative: 'Micro-segmentation and role-aware policy enforcement blocked lateral movement instantly.',
+      },
+      disabled: {
+        prevented: false,
+        severity: 'critical',
+        narrative: 'Once inside the network, weak segmentation would expose the admin plane.',
+      },
+    },
+  };
+
+  const entry = catalog[attackType] ?? catalog.brute_force;
+  const mode = zeroTrustEnabled ? entry.enabled : entry.disabled;
+
+  return {
+    id: `${attackType}-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`,
+    type: entry.name,
+    prevented: mode.prevented,
+    severity: mode.severity,
+    detail: mode.narrative,
+    actor: zeroTrustEnabled ? 'Attack simulator' : 'Perimeter-only baseline',
+    time: seeded ? new Date(Date.now() - 1000 * 60 * 12).toISOString() : new Date().toISOString(),
+  };
+}
+
+function recordEvent({ kind, severity, user, zone, result, detail }) {
+  securityState.events.unshift({
+    id: `evt-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+    time: new Date().toISOString(),
+    kind,
+    severity,
+    user,
+    zone,
+    result,
+    detail,
+  });
+}
+
+function recordAttack(result) {
+  securityState.attacks.unshift(result);
+  recordEvent({
+    kind: result.type,
+    severity: result.severity,
+    user: result.actor,
+    zone: 'simulation',
+    result: result.prevented ? 'blocked' : 'breach',
+    detail: result.detail,
+  });
+}
+
+function latestEvent() {
+  return securityState.events[0] ?? null;
 }
