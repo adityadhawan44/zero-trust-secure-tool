@@ -225,6 +225,13 @@ small {
   background: transparent;
 }
 
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
 .page-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -257,7 +264,8 @@ small {
 .comparison-stack,
 .distribution-list,
 .log-table,
-.session-stack {
+.session-stack,
+.roadmap-list {
   display: grid;
   gap: 0.9rem;
 }
@@ -307,6 +315,18 @@ small {
 
 .feature-row {
   font-size: 0.96rem;
+}
+
+.helper-copy {
+  margin-top: 0.9rem;
+  color: var(--muted);
+}
+
+.roadmap-card {
+  border-radius: 1.25rem;
+  padding: 1rem 1.1rem;
+  background: rgba(12, 26, 43, 0.8);
+  border: 1px solid var(--line);
 }
 
 .credential-row,
