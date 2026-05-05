@@ -1,15 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
-type PageKey = 'home' | 'architecture' | 'simulator' | 'dashboard' | 'attacks' | 'presentation';
 type Role = 'student' | 'teacher' | 'admin';
-
-type ZonePolicy = {
-  zone: string;
-  key: 'public' | 'student' | 'teacher' | 'admin';
-  description: string;
-  requiredRole: Array<Role | 'guest'>;
-  rule: string;
-};
+type RouteKey = '/' | '/login' | '/dashboard' | '/admin' | '/attack-lab' | '/logs';
+type ZoneKey = 'public' | 'student' | 'teacher' | 'admin';
 
 type DemoUser = {
   id: string;
@@ -23,6 +16,35 @@ type DemoUser = {
   homeIpPrefix: string;
 };
 
+type ZonePolicy = {
+  key: ZoneKey;
+  zone: string;
+  description: string;
+  requiredRole: Array<Role | 'guest'>;
+  rule: string;
+};
+
+type Session = {
+  id: string;
+  userId: string;
+  userName: string;
+  role: Role;
+  location: string;
+  ipAddress: string;
+  deviceId: string;
+  userAgent: string;
+  requestedZone: ZoneKey;
+  deviceTrusted: boolean;
+  riskScore: number;
+  riskLevel: 'low' | 'medium' | 'high';
+  behaviorScore: number;
+  mfaRequired: boolean;
+  mfaCompleted: boolean;
+  zoneDecision: 'allowed' | 'challenge' | 'limited' | 'blocked' | 'revoked';
+  policyReasons: string[];
+  revoked: boolean;
+};
+
 type EventItem = {
   id: string;
   time: string;
@@ -32,16 +54,6 @@ type EventItem = {
   zone: string;
   result: string;
   detail: string;
-};
-
-type AttackResult = {
-  id: string;
-  type: string;
-  prevented: boolean;
-  severity: 'high' | 'critical';
-  detail: string;
-  actor: string;
-  time: string;
 };
 
 type DeviceRecord = {
@@ -54,87 +66,32 @@ type DeviceRecord = {
   userAgent: string;
 };
 
-type Session = {
+type AttackResult = {
   id: string;
-  userId: string;
-  userName: string;
-  role: Role;
-  location: string;
-  ipAddress: string;
-  deviceId: string;
-  userAgent: string;
-  requestedZone: ZonePolicy['key'];
-  deviceTrusted: boolean;
-  riskScore: number;
-  riskLevel: 'low' | 'medium' | 'high';
-  behaviorScore: number;
-  mfaRequired: boolean;
-  mfaCompleted: boolean;
-  zoneDecision: string;
-  policyReasons: string[];
-  revoked: boolean;
+  type: string;
+  prevented: boolean;
+  severity: 'high' | 'critical';
+  detail: string;
+  actor: string;
+  time: string;
 };
 
-type DashboardState = {
+type AppState = {
   users: DemoUser[];
-  zonePolicies: ZonePolicy[];
-  activeSessions: Session[];
-  recentEvents: EventItem[];
-  attackResults: AttackResult[];
-  deviceRecords: DeviceRecord[];
+  policies: ZonePolicy[];
+  sessions: Session[];
+  events: EventItem[];
+  devices: DeviceRecord[];
+  attacks: AttackResult[];
   metrics: {
     successfulLogins: number;
     blockedAttempts: number;
     stepUpChallenges: number;
     trustedDevices: number;
   };
-  charts: {
-    loginActivity: Array<{ label: string; success: number; failed: number }>;
-    riskDistribution: Array<{ label: string; value: number }>;
-  };
 };
 
-const pages: Array<{ key: PageKey; label: string }> = [
-  { key: 'home', label: 'Home' },
-  { key: 'architecture', label: 'Architecture' },
-  { key: 'simulator', label: 'Live Simulator' },
-  { key: 'dashboard', label: 'Dashboard' },
-  { key: 'attacks', label: 'Attack Lab' },
-  { key: 'presentation', label: 'Presentation Guide' },
-];
-
-const zonePolicies: ZonePolicy[] = [
-  {
-    zone: 'Public Zone',
-    key: 'public',
-    description: 'Landing pages, policy explainers, and awareness content.',
-    requiredRole: ['guest', 'student', 'teacher', 'admin'],
-    rule: 'Low-friction access with visibility logging.',
-  },
-  {
-    zone: 'Student Workspace',
-    key: 'student',
-    description: 'Assignments, course materials, and student records.',
-    requiredRole: ['student', 'teacher', 'admin'],
-    rule: 'Unknown devices trigger step-up authentication.',
-  },
-  {
-    zone: 'Faculty Tools',
-    key: 'teacher',
-    description: 'Grading, moderation, and academic workflow tools.',
-    requiredRole: ['teacher', 'admin'],
-    rule: 'Role, trusted context, and medium-risk thresholds enforced.',
-  },
-  {
-    zone: 'Admin Control Plane',
-    key: 'admin',
-    description: 'Identity settings, logs, and sensitive operations.',
-    requiredRole: ['admin'],
-    rule: 'Approved geography, trusted network, and fresh MFA are mandatory.',
-  },
-];
-
-const seedUsers: DemoUser[] = [
+const users: DemoUser[] = [
   {
     id: 'user-student-01',
     name: 'Aarav Sharma',
@@ -170,17 +127,75 @@ const seedUsers: DemoUser[] = [
   },
 ];
 
-const defaultLogin = {
-  email: 'admin@zerotrust.demo',
-  password: 'admin123',
-  deviceId: 'device-admin-thinkpad',
-  userAgent: 'Edge on Windows',
-  location: 'Bengaluru, IN',
-  ipAddress: '10.20.44.18',
-  loginHour: '11',
-  behaviorScore: '10',
-  requestedZone: 'admin' as ZonePolicy['key'],
-  zeroTrustEnabled: true,
+const policies: ZonePolicy[] = [
+  {
+    key: 'public',
+    zone: 'Public Zone',
+    description: 'Landing content, awareness pages, and system documentation.',
+    requiredRole: ['guest', 'student', 'teacher', 'admin'],
+    rule: 'No trust granted beyond public content visibility.',
+  },
+  {
+    key: 'student',
+    zone: 'Student Portal',
+    description: 'Assignments, attendance, results, and student resources.',
+    requiredRole: ['student', 'teacher', 'admin'],
+    rule: 'Unknown devices trigger step-up verification before access.',
+  },
+  {
+    key: 'teacher',
+    zone: 'Faculty Workspace',
+    description: 'Grading, moderation, and academic workflow tools.',
+    requiredRole: ['teacher', 'admin'],
+    rule: 'Role, context, and medium-risk policy checks enforced.',
+  },
+  {
+    key: 'admin',
+    zone: 'Admin Control Plane',
+    description: 'Identity controls, audit logs, and sensitive operations.',
+    requiredRole: ['admin'],
+    rule: 'Fresh MFA, approved location, and strict role enforcement required.',
+  },
+];
+
+const protectedRoutes: Record<Exclude<RouteKey, '/' | '/login'>, ZoneKey> = {
+  '/dashboard': 'student',
+  '/admin': 'admin',
+  '/attack-lab': 'public',
+  '/logs': 'admin',
+};
+
+const demoPresets: Record<Role, { route: RouteKey; zone: ZoneKey; deviceId: string; userAgent: string; location: string; ipAddress: string; loginHour: string; behaviorScore: string }> = {
+  student: {
+    route: '/dashboard',
+    zone: 'student',
+    deviceId: 'device-campus-laptop',
+    userAgent: 'Chrome on Windows',
+    location: 'Bengaluru, IN',
+    ipAddress: '10.20.44.18',
+    loginHour: '10',
+    behaviorScore: '12',
+  },
+  teacher: {
+    route: '/dashboard',
+    zone: 'teacher',
+    deviceId: 'device-faculty-mac',
+    userAgent: 'Safari on macOS',
+    location: 'Bengaluru, IN',
+    ipAddress: '10.20.44.18',
+    loginHour: '14',
+    behaviorScore: '15',
+  },
+  admin: {
+    route: '/admin',
+    zone: 'admin',
+    deviceId: 'device-admin-thinkpad',
+    userAgent: 'Edge on Windows',
+    location: 'Bengaluru, IN',
+    ipAddress: '10.20.44.18',
+    loginHour: '11',
+    behaviorScore: '10',
+  },
 };
 
 const attackOptions = [
@@ -193,49 +208,49 @@ function now() {
   return new Date().toISOString();
 }
 
-function shortTime(value: string) {
+function readableTime(value: string) {
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function classifyRisk(score: number): Session['riskLevel'] {
+function riskLevel(score: number): Session['riskLevel'] {
   if (score >= 70) return 'high';
   if (score >= 30) return 'medium';
   return 'low';
 }
 
-function simulateAttack(attackType: string, zeroTrustEnabled: boolean): AttackResult {
-  const map = {
+function simulateAttack(type: string, zeroTrustEnabled: boolean): AttackResult {
+  const attackMap = {
     brute_force: {
       name: 'Brute force login',
-      on: 'Rate limiting and adaptive checks throttle repeated credential abuse.',
-      off: 'Without Zero Trust controls, repeated guesses keep hitting the login surface.',
+      on: 'Rate limiting, OTP challenge, and monitoring block repeated login abuse.',
+      off: 'Without Zero Trust controls, repeated guesses continue hitting the login surface.',
     },
     session_hijack: {
       name: 'Session hijacking',
-      on: 'Continuous authentication detects IP drift and invalidates the stolen session.',
-      off: 'A stolen token continues to work after login in a perimeter-only model.',
+      on: 'Continuous verification detects IP drift and revokes the stolen session.',
+      off: 'A stolen session remains active after login in a perimeter-only model.',
     },
     admin_bypass: {
       name: 'Unauthorized admin access',
-      on: 'Micro-segmentation and role checks block direct admin URL access instantly.',
-      off: 'Weak segmentation allows lateral movement toward the admin zone.',
+      on: 'Role-aware route protection and micro-segmentation block admin traversal instantly.',
+      off: 'Weak segmentation exposes the admin surface once the user is inside.',
     },
   } as const;
 
-  const item = map[attackType as keyof typeof map] ?? map.brute_force;
+  const item = attackMap[type as keyof typeof attackMap] ?? attackMap.brute_force;
   return {
     id: `atk-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
     type: item.name,
     prevented: zeroTrustEnabled,
-    severity: attackType === 'brute_force' ? 'high' : 'critical',
+    severity: type === 'brute_force' ? 'high' : 'critical',
     detail: zeroTrustEnabled ? item.on : item.off,
-    actor: zeroTrustEnabled ? 'Attack simulator' : 'Perimeter-only baseline',
+    actor: zeroTrustEnabled ? 'ZeroTrustX engine' : 'Legacy perimeter baseline',
     time: now(),
   };
 }
 
-function buildInitialState(): DashboardState {
-  const devices: DeviceRecord[] = seedUsers.flatMap((user) =>
+function buildInitialState(): AppState {
+  const devices: DeviceRecord[] = users.flatMap((user) =>
     user.knownDevices.map((deviceId) => ({
       userId: user.id,
       deviceId,
@@ -247,13 +262,11 @@ function buildInitialState(): DashboardState {
     })),
   );
 
-  const attacks = [simulateAttack('brute_force', true), simulateAttack('session_hijack', true), simulateAttack('admin_bypass', false)];
-
   return {
-    users: seedUsers,
-    zonePolicies,
-    activeSessions: [],
-    recentEvents: [
+    users,
+    policies,
+    sessions: [],
+    events: [
       {
         id: 'evt-1',
         time: now(),
@@ -262,7 +275,7 @@ function buildInitialState(): DashboardState {
         user: 'Rohan Menon',
         zone: 'admin',
         result: 'allowed',
-        detail: 'Known device, campus IP, and approved hours satisfied policy.',
+        detail: 'Known device, approved geography, and fresh verification satisfied access policy.',
       },
       {
         id: 'evt-2',
@@ -272,7 +285,7 @@ function buildInitialState(): DashboardState {
         user: 'Aarav Sharma',
         zone: 'student',
         result: 'blocked',
-        detail: 'A new geography raised the risk score above the safe threshold.',
+        detail: 'Different geography and new network pushed risk above safe threshold.',
       },
       {
         id: 'evt-3',
@@ -281,159 +294,70 @@ function buildInitialState(): DashboardState {
         severity: 'medium',
         user: 'Prof. Kavya Iyer',
         zone: 'teacher',
-        result: 'limited_access',
-        detail: 'Typing and navigation behavior deviated from the normal pattern.',
+        result: 'limited',
+        detail: 'Behavioral deviation reduced trust and restricted feature access.',
       },
     ],
-    attackResults: attacks,
-    deviceRecords: devices,
+    devices,
+    attacks: [simulateAttack('brute_force', true), simulateAttack('session_hijack', true), simulateAttack('admin_bypass', false)],
     metrics: {
       successfulLogins: 24,
       blockedAttempts: 7,
       stepUpChallenges: 5,
-      trustedDevices: devices.filter((item) => item.trusted).length,
+      trustedDevices: devices.filter((device) => device.trusted).length,
     },
-    charts: {
-      loginActivity: [
-        { label: 'Mon', success: 12, failed: 4 },
-        { label: 'Tue', success: 15, failed: 5 },
-        { label: 'Wed', success: 17, failed: 6 },
-        { label: 'Thu', success: 18, failed: 3 },
-        { label: 'Fri', success: 16, failed: 7 },
-        { label: 'Sat', success: 10, failed: 2 },
-      ],
-      riskDistribution: [
-        { label: 'Low', value: 51 },
-        { label: 'Medium', value: 31 },
-        { label: 'High', value: 18 },
-      ],
-    },
-  };
-}
-
-function scoreRisk(user: DemoUser, payload: typeof defaultLogin) {
-  let score = 0;
-  const reasons: string[] = [];
-  const deviceTrusted = user.knownDevices.includes(payload.deviceId);
-  const locationTrusted = user.typicalLocations.includes(payload.location);
-  const ipTrusted = payload.ipAddress.startsWith(user.homeIpPrefix);
-  const behaviorScore = Number(payload.behaviorScore);
-  const hour = Number(payload.loginHour);
-
-  if (!deviceTrusted) {
-    score += 30;
-    reasons.push('New device detected.');
-  }
-  if (!ipTrusted) {
-    score += 20;
-    reasons.push('New IP/network detected.');
-  }
-  if (!locationTrusted) {
-    score += 40;
-    reasons.push('Different location detected.');
-  }
-  if (hour >= 22 || hour <= 5) {
-    score += 10;
-    reasons.push('Odd login time.');
-  }
-  if (behaviorScore >= 60) {
-    score += 15;
-    reasons.push('Behavior pattern anomaly.');
-  }
-  if (payload.requestedZone === 'admin') {
-    score += 8;
-    reasons.push('Privileged zone requested.');
-  }
-
-  return {
-    score,
-    deviceTrusted,
-    reasons: reasons.length > 0 ? reasons : ['Known device, trusted network, and expected context.'],
-    level: classifyRisk(score),
-  };
-}
-
-function evaluateAccess(params: {
-  role: Role;
-  requestedZone: ZonePolicy['key'];
-  location: string;
-  loginHour: number;
-  riskScore: number;
-  deviceTrusted: boolean;
-  mfaSatisfied: boolean;
-}) {
-  const reasons: string[] = [];
-  const zone = zonePolicies.find((item) => item.key === params.requestedZone) ?? zonePolicies[0];
-
-  if (!zone.requiredRole.includes(params.role)) {
-    reasons.push(`Role ${params.role} cannot access ${zone.zone}.`);
-  }
-  if (params.riskScore >= 70) {
-    reasons.push('Risk score is above the maximum allowed threshold.');
-  } else if (params.riskScore >= 30 && !params.mfaSatisfied) {
-    reasons.push('Risk score requires MFA.');
-  }
-  if (params.requestedZone === 'admin') {
-    if (!params.location.toLowerCase().includes('bengaluru')) {
-      reasons.push('Admin access is limited to the approved geography.');
-    }
-    if (params.loginHour >= 22 || params.loginHour <= 5) {
-      reasons.push('Admin access is blocked outside approved hours.');
-    }
-    if (!params.mfaSatisfied) {
-      reasons.push('Fresh MFA is mandatory for the admin zone.');
-    }
-  }
-  if ((params.requestedZone === 'student' || params.requestedZone === 'teacher') && !params.deviceTrusted && !params.mfaSatisfied) {
-    reasons.push('Unknown device must complete step-up verification.');
-  }
-
-  return {
-    allowed: reasons.length === 0,
-    reasons: reasons.length > 0 ? reasons : ['Policy requirements satisfied.'],
   };
 }
 
 export default function App() {
-  const [page, setPage] = useState<PageKey>('home');
-  const [state, setState] = useState<DashboardState>(() => buildInitialState());
-  const [loginForm, setLoginForm] = useState(defaultLogin);
+  const [route, setRoute] = useState<RouteKey>('/');
+  const [state, setState] = useState<AppState>(() => buildInitialState());
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
-  const [decisionStream, setDecisionStream] = useState('This presentation mode runs entirely inside the browser, so it stays reliable during demos.');
+  const [loginForm, setLoginForm] = useState({
+    email: 'admin@zerotrust.demo',
+    password: 'admin123',
+    deviceId: 'device-admin-thinkpad',
+    userAgent: 'Edge on Windows',
+    location: 'Bengaluru, IN',
+    ipAddress: '10.20.44.18',
+    loginHour: '11',
+    behaviorScore: '10',
+    requestedZone: 'admin' as ZoneKey,
+    zeroTrustEnabled: true,
+  });
+  const [decisionStream, setDecisionStream] = useState(
+    'This demo now shows real segmentation: public pages, login, dashboard, admin zone, attack lab, and logs.',
+  );
   const [mfaCode, setMfaCode] = useState('482911');
   const [protectedResult, setProtectedResult] = useState('');
-  const [attackMode, setAttackMode] = useState(true);
   const [selectedAttack, setSelectedAttack] = useState('session_hijack');
+  const [attackMode, setAttackMode] = useState(true);
   const [attackResult, setAttackResult] = useState<AttackResult | null>(null);
 
-  useEffect(() => {
-    const syncFromHash = () => {
-      const key = window.location.hash.replace('#', '') as PageKey;
-      if (pages.some((item) => item.key === key)) {
-        setPage(key);
-      } else {
-        setPage('home');
-      }
-    };
-
-    syncFromHash();
-    window.addEventListener('hashchange', syncFromHash);
-    return () => window.removeEventListener('hashchange', syncFromHash);
-  }, []);
-
   const highPriorityAlerts = useMemo(
-    () => state.recentEvents.filter((item) => item.severity !== 'low').slice(0, 4),
-    [state.recentEvents],
+    () => state.events.filter((event) => event.severity !== 'low').slice(0, 4),
+    [state.events],
   );
 
-  function navigate(next: PageKey) {
-    window.location.hash = next;
-  }
+  const loginChart = [
+    { label: 'Mon', success: 12, failed: 4 },
+    { label: 'Tue', success: 15, failed: 5 },
+    { label: 'Wed', success: 17, failed: 6 },
+    { label: 'Thu', success: 18, failed: 3 },
+    { label: 'Fri', success: 16, failed: 7 },
+    { label: 'Sat', success: 10, failed: 2 },
+  ];
 
-  function appendEvent(event: EventItem) {
+  const riskChart = [
+    { label: 'Low', value: 51 },
+    { label: 'Medium', value: 31 },
+    { label: 'High', value: 18 },
+  ];
+
+  function pushEvent(event: EventItem) {
     setState((current) => ({
       ...current,
-      recentEvents: [event, ...current.recentEvents].slice(0, 12),
+      events: [event, ...current.events].slice(0, 14),
       metrics: {
         ...current.metrics,
         blockedAttempts:
@@ -443,70 +367,171 @@ export default function App() {
     }));
   }
 
-  function applyDemoIdentity(email: string, password: string, role: Role) {
-    const presets: Record<Role, Partial<typeof defaultLogin>> = {
-      student: {
-        requestedZone: 'student',
-        deviceId: 'device-campus-laptop',
-        userAgent: 'Chrome on Windows',
-        location: 'Bengaluru, IN',
-        ipAddress: '10.20.44.18',
-        loginHour: '10',
-        behaviorScore: '12',
-      },
-      teacher: {
-        requestedZone: 'teacher',
-        deviceId: 'device-faculty-mac',
-        userAgent: 'Safari on macOS',
-        location: 'Bengaluru, IN',
-        ipAddress: '10.20.44.18',
-        loginHour: '14',
-        behaviorScore: '15',
-      },
-      admin: {
-        requestedZone: 'admin',
-        deviceId: 'device-admin-thinkpad',
-        userAgent: 'Edge on Windows',
-        location: 'Bengaluru, IN',
-        ipAddress: '10.20.44.18',
-        loginHour: '11',
-        behaviorScore: '10',
-      },
-    };
+  function navigate(next: RouteKey) {
+    if (next === '/login' || next === '/' || next === '/attack-lab') {
+      setRoute(next);
+      return;
+    }
 
-    setLoginForm((current) => ({ ...current, email, password, ...presets[role] }));
-    navigate('simulator');
+    if (!currentSession || currentSession.revoked) {
+      setDecisionStream(`Access to ${next} denied until a verified session exists.`);
+      setRoute('/login');
+      return;
+    }
+
+    const zone = protectedRoutes[next];
+    const decision = evaluateRouteAccess(zone, currentSession, Number(loginForm.loginHour));
+    if (!decision.allowed) {
+      pushEvent({
+        id: `evt-${Date.now()}`,
+        time: now(),
+        kind: 'Route access blocked',
+        severity: 'high',
+        user: currentSession.userName,
+        zone,
+        result: 'blocked',
+        detail: decision.reasons.join(' '),
+      });
+      setDecisionStream(`Navigation blocked: ${decision.reasons.join(' ')}`);
+      return;
+    }
+
+    setRoute(next);
+  }
+
+  function applyDemoPreset(role: Role) {
+    const user = state.users.find((item) => item.role === role);
+    if (!user) return;
+    const preset = demoPresets[role];
+    setLoginForm({
+      email: user.email,
+      password: user.password,
+      requestedZone: preset.zone,
+      deviceId: preset.deviceId,
+      userAgent: preset.userAgent,
+      location: preset.location,
+      ipAddress: preset.ipAddress,
+      loginHour: preset.loginHour,
+      behaviorScore: preset.behaviorScore,
+      zeroTrustEnabled: true,
+    });
+    setRoute('/login');
+  }
+
+  function computeRisk(user: DemoUser) {
+    let score = 0;
+    const reasons: string[] = [];
+    const trustedDevice = user.knownDevices.includes(loginForm.deviceId);
+    const trustedLocation = user.typicalLocations.includes(loginForm.location);
+    const trustedNetwork = loginForm.ipAddress.startsWith(user.homeIpPrefix);
+    const hour = Number(loginForm.loginHour);
+    const behavior = Number(loginForm.behaviorScore);
+
+    if (!trustedDevice) {
+      score += 30;
+      reasons.push('New device detected.');
+    }
+    if (!trustedNetwork) {
+      score += 20;
+      reasons.push('New IP/network detected.');
+    }
+    if (!trustedLocation) {
+      score += 40;
+      reasons.push('Different location detected.');
+    }
+    if (hour >= 22 || hour <= 5) {
+      score += 10;
+      reasons.push('Odd login time.');
+    }
+    if (behavior >= 60) {
+      score += 15;
+      reasons.push('Behavior anomaly detected.');
+    }
+    if (loginForm.requestedZone === 'admin') {
+      score += 8;
+      reasons.push('Privileged zone requested.');
+    }
+
+    return {
+      score,
+      reasons: reasons.length > 0 ? reasons : ['Known device, expected network, and normal behavior.'],
+      trustedDevice,
+      level: riskLevel(score),
+    };
+  }
+
+  function evaluateRouteAccess(zone: ZoneKey, session: Session, loginHour: number) {
+    const policy = state.policies.find((item) => item.key === zone) ?? state.policies[0];
+    const reasons: string[] = [];
+
+    if (!policy.requiredRole.includes(session.role)) {
+      reasons.push(`Role ${session.role} cannot enter ${policy.zone}.`);
+    }
+    if (session.riskScore >= 70) {
+      reasons.push('Risk score is too high.');
+    } else if (session.riskScore >= 30 && !session.mfaCompleted) {
+      reasons.push('MFA is required before access may continue.');
+    }
+    if (zone === 'admin') {
+      if (!session.location.toLowerCase().includes('bengaluru')) {
+        reasons.push('Admin zone is limited to approved geography.');
+      }
+      if (loginHour >= 22 || loginHour <= 5) {
+        reasons.push('Admin access outside approved hours is blocked.');
+      }
+      if (!session.mfaCompleted) {
+        reasons.push('Fresh MFA is required for admin access.');
+      }
+    }
+    if ((zone === 'student' || zone === 'teacher') && !session.deviceTrusted && !session.mfaCompleted) {
+      reasons.push('Unknown device requires step-up verification.');
+    }
+
+    return {
+      allowed: reasons.length === 0,
+      reasons: reasons.length > 0 ? reasons : ['Policy requirements satisfied.'],
+    };
   }
 
   function handleLogin() {
     const user = state.users.find((item) => item.email === loginForm.email);
     if (!user || user.password !== loginForm.password) {
-      const event: EventItem = {
+      pushEvent({
         id: `evt-${Date.now()}`,
         time: now(),
         kind: 'Invalid login attempt',
         severity: 'high',
-        user: loginForm.email || 'Unknown user',
+        user: loginForm.email || 'Unknown',
         zone: loginForm.requestedZone,
         result: 'blocked',
-        detail: 'Credential validation failed before access could be granted.',
-      };
-      appendEvent(event);
-      setDecisionStream('Login blocked: invalid credentials.');
+        detail: 'Credential validation failed.',
+      });
+      setDecisionStream('Login failed: invalid credentials.');
       return;
     }
 
-    const risk = scoreRisk(user, loginForm);
-    const needsMfa = loginForm.zeroTrustEnabled && risk.score >= 30;
-    const decision = evaluateAccess({
+    const risk = computeRisk(user);
+    const needsMfa = loginForm.zeroTrustEnabled && risk.score >= 30 && risk.score < 70;
+    const decision = evaluateRouteAccess(loginForm.requestedZone, {
+      id: 'preview',
+      userId: user.id,
+      userName: user.name,
       role: user.role,
-      requestedZone: loginForm.requestedZone,
       location: loginForm.location,
-      loginHour: Number(loginForm.loginHour),
+      ipAddress: loginForm.ipAddress,
+      deviceId: loginForm.deviceId,
+      userAgent: loginForm.userAgent,
+      requestedZone: loginForm.requestedZone,
+      deviceTrusted: risk.trustedDevice,
       riskScore: risk.score,
-      deviceTrusted: risk.deviceTrusted,
-      mfaSatisfied: !needsMfa,
-    });
+      riskLevel: risk.level,
+      behaviorScore: Number(loginForm.behaviorScore),
+      mfaRequired: needsMfa,
+      mfaCompleted: false,
+      zoneDecision: 'blocked',
+      policyReasons: [],
+      revoked: false,
+    }, Number(loginForm.loginHour));
 
     const session: Session = {
       id: `session-${Date.now()}`,
@@ -518,22 +543,22 @@ export default function App() {
       deviceId: loginForm.deviceId,
       userAgent: loginForm.userAgent,
       requestedZone: loginForm.requestedZone,
-      deviceTrusted: risk.deviceTrusted,
+      deviceTrusted: risk.trustedDevice,
       riskScore: risk.score,
       riskLevel: risk.level,
       behaviorScore: Number(loginForm.behaviorScore),
       mfaRequired: needsMfa,
       mfaCompleted: false,
-      zoneDecision: risk.score >= 70 ? 'denied' : needsMfa ? 'challenge' : decision.allowed ? 'allowed' : 'denied',
-      policyReasons: risk.score >= 70 ? ['Risk score too high. Access blocked immediately.'] : decision.reasons,
+      zoneDecision: risk.score >= 70 ? 'blocked' : needsMfa ? 'challenge' : decision.allowed ? 'allowed' : 'blocked',
+      policyReasons: risk.score >= 70 ? ['Risk score too high. Access denied immediately.'] : decision.reasons,
       revoked: false,
     };
 
     setCurrentSession(session);
     setState((current) => ({
       ...current,
-      activeSessions: [session, ...current.activeSessions.filter((item) => item.userId !== session.userId)].slice(0, 6),
-      deviceRecords: [
+      sessions: [session, ...current.sessions.filter((item) => item.userId !== user.id)].slice(0, 6),
+      devices: [
         {
           userId: user.id,
           deviceId: loginForm.deviceId,
@@ -543,7 +568,7 @@ export default function App() {
           location: loginForm.location,
           userAgent: loginForm.userAgent,
         },
-        ...current.deviceRecords.filter((item) => !(item.userId === user.id && item.deviceId === loginForm.deviceId)),
+        ...current.devices.filter((item) => !(item.userId === user.id && item.deviceId === loginForm.deviceId)),
       ].slice(0, 10),
       metrics: {
         ...current.metrics,
@@ -553,7 +578,7 @@ export default function App() {
     }));
 
     if (risk.score >= 70) {
-      appendEvent({
+      pushEvent({
         id: `evt-${Date.now()}`,
         time: now(),
         kind: 'High-risk login blocked',
@@ -568,7 +593,7 @@ export default function App() {
     }
 
     if (needsMfa) {
-      appendEvent({
+      pushEvent({
         id: `evt-${Date.now()}`,
         time: now(),
         kind: 'Adaptive MFA triggered',
@@ -578,11 +603,11 @@ export default function App() {
         result: 'challenge',
         detail: risk.reasons.join(' '),
       });
-      setDecisionStream(`MFA required. Risk score ${risk.score}. Demo OTP is 482911.`);
+      setDecisionStream(`MFA required. Risk score ${risk.score}. Demo OTP: 482911.`);
       return;
     }
 
-    appendEvent({
+    pushEvent({
       id: `evt-${Date.now()}`,
       time: now(),
       kind: 'Login allowed',
@@ -592,52 +617,44 @@ export default function App() {
       result: 'allowed',
       detail: decision.reasons.join(' '),
     });
-    setDecisionStream(`Access allowed. Risk score ${risk.score}. ${decision.reasons.join(' ')}`);
+    setDecisionStream(`Access granted. ${decision.reasons.join(' ')}`);
+    setRoute(user.role === 'admin' ? '/admin' : '/dashboard');
   }
 
   function verifyMfa() {
     if (!currentSession) return;
     if (mfaCode !== '482911') {
-      appendEvent({
+      pushEvent({
         id: `evt-${Date.now()}`,
         time: now(),
-        kind: 'MFA failed',
+        kind: 'MFA verification failed',
         severity: 'high',
         user: currentSession.userName,
         zone: currentSession.requestedZone,
         result: 'blocked',
-        detail: 'Incorrect OTP entered during step-up authentication.',
+        detail: 'Incorrect OTP submitted during adaptive verification.',
       });
-      setDecisionStream('Incorrect OTP. Access stays blocked.');
+      setDecisionStream('Incorrect OTP. Access remains blocked.');
       return;
     }
 
-    const decision = evaluateAccess({
-      role: currentSession.role,
-      requestedZone: currentSession.requestedZone,
-      location: currentSession.location,
-      loginHour: Number(loginForm.loginHour),
-      riskScore: currentSession.riskScore,
-      deviceTrusted: currentSession.deviceTrusted,
-      mfaSatisfied: true,
-    });
-
-    const updated = {
+    const decision = evaluateRouteAccess(currentSession.requestedZone, currentSession, Number(loginForm.loginHour));
+    const updated: Session = {
       ...currentSession,
       mfaCompleted: true,
-      zoneDecision: decision.allowed ? 'allowed' : 'denied',
+      zoneDecision: decision.allowed ? 'allowed' : 'blocked',
       policyReasons: decision.reasons,
     };
     setCurrentSession(updated);
     setState((current) => ({
       ...current,
-      activeSessions: current.activeSessions.map((item) => (item.id === updated.id ? updated : item)),
+      sessions: current.sessions.map((item) => (item.id === updated.id ? updated : item)),
       metrics: {
         ...current.metrics,
         successfulLogins: current.metrics.successfulLogins + (decision.allowed ? 1 : 0),
       },
     }));
-    appendEvent({
+    pushEvent({
       id: `evt-${Date.now()}`,
       time: now(),
       kind: decision.allowed ? 'MFA verified' : 'Post-MFA policy block',
@@ -647,29 +664,23 @@ export default function App() {
       result: decision.allowed ? 'allowed' : 'blocked',
       detail: decision.reasons.join(' '),
     });
-    setDecisionStream(decision.allowed ? 'OTP accepted. Access granted.' : `OTP accepted, but policy still blocks access: ${decision.reasons.join(' ')}`);
+    setDecisionStream(decision.allowed ? 'OTP accepted. Access granted.' : `OTP accepted, but policy blocks access: ${decision.reasons.join(' ')}`);
+    if (decision.allowed) {
+      setRoute(updated.role === 'admin' ? '/admin' : '/dashboard');
+    }
   }
 
-  function callProtectedZone(zone: ZonePolicy['key']) {
+  function testProtectedZone(zone: ZoneKey) {
     if (!currentSession) {
-      setProtectedResult('Login first to test a protected API route.');
+      setProtectedResult('No verified session. Login first.');
       return;
     }
-    const decision = evaluateAccess({
-      role: currentSession.role,
-      requestedZone: zone,
-      location: currentSession.location,
-      loginHour: Number(loginForm.loginHour),
-      riskScore: currentSession.riskScore,
-      deviceTrusted: currentSession.deviceTrusted,
-      mfaSatisfied: currentSession.mfaCompleted || !currentSession.mfaRequired,
-    });
-
+    const decision = evaluateRouteAccess(zone, currentSession, Number(loginForm.loginHour));
     if (!decision.allowed) {
-      appendEvent({
+      pushEvent({
         id: `evt-${Date.now()}`,
         time: now(),
-        kind: 'Protected API blocked',
+        kind: 'Protected resource blocked',
         severity: 'high',
         user: currentSession.userName,
         zone,
@@ -680,17 +691,17 @@ export default function App() {
       return;
     }
 
-    appendEvent({
+    pushEvent({
       id: `evt-${Date.now()}`,
       time: now(),
-      kind: 'Protected API allowed',
+      kind: 'Protected resource allowed',
       severity: 'low',
       user: currentSession.userName,
       zone,
       result: 'allowed',
-      detail: 'JWT validation, role check, and policy evaluation all passed.',
+      detail: 'Role, context, and risk policy all passed.',
     });
-    setProtectedResult(`200 OK: ${currentSession.userName} accessed the ${zone} resources.`);
+    setProtectedResult(`200 OK: access granted to ${zone} zone.`);
   }
 
   function recheckSession(mode: 'stable' | 'ip_shift' | 'behavior_anomaly') {
@@ -700,30 +711,30 @@ export default function App() {
 
     if (mode === 'ip_shift') {
       updated.riskScore = Math.min(98, updated.riskScore + 26);
-      updated.riskLevel = classifyRisk(updated.riskScore);
+      updated.riskLevel = riskLevel(updated.riskScore);
       updated.zoneDecision = updated.riskScore >= 70 ? 'revoked' : 'challenge';
       updated.revoked = updated.riskScore >= 70;
       message =
         updated.riskScore >= 70
-          ? 'Continuous authentication revoked the session after the IP changed.'
-          : 'Continuous authentication paused access and requires re-verification.';
+          ? 'Continuous verification revoked the session after an IP shift.'
+          : 'Continuous verification paused access and requires re-authentication.';
     } else if (mode === 'behavior_anomaly') {
       updated.riskScore = Math.min(95, updated.riskScore + 18);
-      updated.riskLevel = classifyRisk(updated.riskScore);
+      updated.riskLevel = riskLevel(updated.riskScore);
       updated.zoneDecision = 'limited';
-      message = 'Behavioral anomaly increased risk and restricted features.';
+      message = 'Behavior anomaly raised risk and restricted access scope.';
     } else {
       updated.riskScore = Math.max(8, updated.riskScore - 4);
-      updated.riskLevel = classifyRisk(updated.riskScore);
+      updated.riskLevel = riskLevel(updated.riskScore);
       updated.zoneDecision = updated.mfaCompleted || !updated.mfaRequired ? 'allowed' : updated.zoneDecision;
     }
 
     setCurrentSession(updated);
     setState((current) => ({
       ...current,
-      activeSessions: current.activeSessions.map((item) => (item.id === updated.id ? updated : item)),
+      sessions: current.sessions.map((item) => (item.id === updated.id ? updated : item)),
     }));
-    appendEvent({
+    pushEvent({
       id: `evt-${Date.now()}`,
       time: now(),
       kind: 'Continuous authentication check',
@@ -736,14 +747,14 @@ export default function App() {
     setDecisionStream(message);
   }
 
-  function runAttackSimulation() {
+  function runAttack() {
     const result = simulateAttack(selectedAttack, attackMode);
     setAttackResult(result);
     setState((current) => ({
       ...current,
-      attackResults: [result, ...current.attackResults].slice(0, 6),
+      attacks: [result, ...current.attacks].slice(0, 6),
     }));
-    appendEvent({
+    pushEvent({
       id: `evt-${Date.now()}`,
       time: now(),
       kind: result.type,
@@ -760,9 +771,8 @@ export default function App() {
     setCurrentSession(null);
     setProtectedResult('');
     setAttackResult(null);
-    setDecisionStream('Simulation reset. Start a fresh walkthrough.');
-    setPage('home');
-    window.location.hash = 'home';
+    setDecisionStream('Demo reset. Start from the landing page and walk through the system again.');
+    setRoute('/');
   }
 
   return (
@@ -772,27 +782,27 @@ export default function App() {
 
       <header className="masthead">
         <div className="brand-block">
-          <p className="eyebrow">ZeroTrustX - Adaptive Security Simulator for Modern Web Systems</p>
-          <h1>A multi-page Zero Trust showcase built for live presentations.</h1>
+          <p className="eyebrow">ZeroTrustX - Zero Trust for College Systems</p>
+          <h1>This is now a segmented system, not a single-page concept demo.</h1>
           <p className="hero-copy">
-            This version is presentation-safe: the demo logic is built into the website itself, so you can open it on
-            Vercel and still demonstrate authentication, risk scoring, policy enforcement, and attack response.
+            Public landing page, dedicated login page, protected dashboard, protected admin control plane, attack lab,
+            and security logs. The navigation itself now proves Zero Trust segmentation.
           </p>
           <div className="hero-actions">
-            <button className="primary-button" onClick={() => navigate('simulator')} type="button">
-              Open Live Simulator
+            <button className="primary-button" onClick={() => navigate('/login')} type="button">
+              Start Login Demo
             </button>
-            <button className="ghost-button" onClick={() => navigate('presentation')} type="button">
-              Show Presentation Guide
+            <button className="ghost-button" onClick={() => navigate('/attack-lab')} type="button">
+              Open Attack Lab
             </button>
           </div>
         </div>
 
         <div className="hero-rail">
           <div className="metric-card">
-            <span>Demo posture</span>
+            <span>Current posture</span>
             <strong>{state.metrics.blockedAttempts}</strong>
-            <p>Blocked access attempts, suspicious flows, and attack simulations recorded in the live feed.</p>
+            <p>Blocked requests, suspicious behavior, and attack outcomes are visible in the system logs.</p>
           </div>
           <div className="metric-strip">
             <article>
@@ -812,11 +822,18 @@ export default function App() {
       </header>
 
       <nav className="tab-row">
-        {pages.map((item) => (
+        {[
+          { path: '/', label: 'Landing' },
+          { path: '/login', label: 'Login' },
+          { path: '/dashboard', label: 'Dashboard' },
+          { path: '/admin', label: 'Admin' },
+          { path: '/attack-lab', label: 'Attack Lab' },
+          { path: '/logs', label: 'Logs' },
+        ].map((item) => (
           <button
-            key={item.key}
-            className={item.key === page ? 'tab-chip active' : 'tab-chip'}
-            onClick={() => navigate(item.key)}
+            key={item.path}
+            className={route === item.path ? 'tab-chip active' : 'tab-chip'}
+            onClick={() => navigate(item.path as RouteKey)}
             type="button"
           >
             {item.label}
@@ -828,23 +845,23 @@ export default function App() {
       </nav>
 
       <main className="workspace">
-        {page === 'home' && (
+        {route === '/' && (
           <section className="page-grid">
             <div className="panel story-panel">
               <div className="section-head">
                 <div>
-                  <p className="eyebrow">What This Project Shows</p>
-                  <h2>Zero Trust is not just login security</h2>
+                  <p className="eyebrow">System Story</p>
+                  <h2>Vulnerable college systems trust too much after login</h2>
                 </div>
               </div>
               <div className="pillar-grid">
                 {[
-                  ['Identity', 'Users are authenticated, challenged with MFA, and continuously re-evaluated.'],
-                  ['Context', 'Device, IP, location, login time, and behavior all affect trust.'],
-                  ['Policy', 'The policy engine decides allow, challenge, limit, or block.'],
-                  ['Enforcement', 'Protected routes simulate API-level security enforcement.'],
-                  ['Monitoring', 'The SOC-style dashboard tracks logs, sessions, and devices.'],
-                  ['Attacks', 'The attack lab compares insecure behavior versus Zero Trust behavior.'],
+                  ['Landing Page', 'Explains the threat model and the need for Zero Trust in a college portal.'],
+                  ['Login Page', 'Identity-first access with context-aware risk analysis and MFA.'],
+                  ['Dashboard', 'Protected academic workspace for verified users only.'],
+                  ['Admin Page', 'Strictly segmented control plane with tighter rules.'],
+                  ['Attack Lab', 'Demonstrates attack scenarios with and without Zero Trust enforcement.'],
+                  ['Logs Page', 'Shows visibility, alerts, and proof that the system is reacting.'],
                 ].map(([title, body], index) => (
                   <article className="pillar-card" key={title}>
                     <span className="pill-icon">{String(index + 1).padStart(2, '0')}</span>
@@ -858,17 +875,17 @@ export default function App() {
             <div className="panel">
               <div className="section-head">
                 <div>
-                  <p className="eyebrow">Professor View</p>
-                  <h2>What to click first</h2>
+                  <p className="eyebrow">How To Demo</p>
+                  <h2>Best flow for your professor</h2>
                 </div>
               </div>
               <div className="feature-list">
                 {[
-                  'Go to Presentation Guide for the exact speaking flow.',
-                  'Open Live Simulator and log in as admin.',
-                  'Change the location or device to trigger MFA.',
-                  'Call the admin API and then simulate IP shift.',
-                  'Finish in Attack Lab with Zero Trust ON vs OFF.',
+                  '1. Open Login and sign in as admin with normal context.',
+                  '2. Show that the Admin page is protected and reachable only after validation.',
+                  '3. Change location or device and trigger MFA or a block.',
+                  '4. Move to Dashboard and test protected student/admin resource access.',
+                  '5. End in Attack Lab and then show the Logs page as proof of enforcement.',
                 ].map((item) => (
                   <article className="feature-row" key={item}>
                     <strong>{item}</strong>
@@ -880,79 +897,31 @@ export default function App() {
             <div className="panel">
               <div className="section-head">
                 <div>
-                  <p className="eyebrow">Alerts</p>
-                  <h2>High-priority signals</h2>
-                </div>
-              </div>
-              <div className="alert-stack">
-                {highPriorityAlerts.map((entry) => (
-                  <article className={`alert-card ${entry.severity}`} key={entry.id}>
-                    <div className="alert-top">
-                      <strong>{entry.kind}</strong>
-                      <span>{entry.severity}</span>
-                    </div>
-                    <p>{entry.detail}</p>
-                  </article>
-                ))}
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="section-head">
-                <div>
-                  <p className="eyebrow">Current Status</p>
-                  <h2>Decision stream</h2>
+                  <p className="eyebrow">Current Narrative</p>
+                  <h2>What the system is doing</h2>
                 </div>
               </div>
               <div className="status-banner">
-                <strong>Live narration</strong>
+                <strong>Decision stream</strong>
                 <p>{decisionStream}</p>
               </div>
             </div>
-          </section>
-        )}
 
-        {page === 'architecture' && (
-          <section className="page-grid">
-            <div className="panel story-panel">
+            <div className="panel">
               <div className="section-head">
                 <div>
-                  <p className="eyebrow">Architecture</p>
-                  <h2>Five-layer Zero Trust design</h2>
+                  <p className="eyebrow">Critical Alerts</p>
+                  <h2>Why visibility matters</h2>
                 </div>
               </div>
-              <div className="roadmap-list">
-                {[
-                  ['1. Identity Layer', 'Login, MFA, session continuity, and tokenized access.'],
-                  ['2. Device & Context Layer', 'IP, user agent, location, and device trust are captured.'],
-                  ['3. Policy Engine', 'Rules combine role, risk, time, and route sensitivity.'],
-                  ['4. Enforcement Layer', 'Protected routes simulate middleware and route guarding.'],
-                  ['5. Monitoring Layer', 'Events, attacks, sessions, and device activity are visible on the dashboard.'],
-                ].map(([title, body]) => (
-                  <article className="roadmap-card" key={title}>
-                    <strong>{title}</strong>
-                    <p>{body}</p>
-                  </article>
-                ))}
-              </div>
-            </div>
-
-            <div className="panel wide-panel">
-              <div className="section-head">
-                <div>
-                  <p className="eyebrow">Micro-Segmentation</p>
-                  <h2>Zone rules</h2>
-                </div>
-              </div>
-              <div className="zone-list">
-                {state.zonePolicies.map((policy) => (
-                  <article className="zone-card" key={policy.key}>
-                    <div className="zone-head">
-                      <h3>{policy.zone}</h3>
-                      <span>{policy.requiredRole.join(' / ')}</span>
+              <div className="alert-stack">
+                {highPriorityAlerts.map((event) => (
+                  <article className={`alert-card ${event.severity}`} key={event.id}>
+                    <div className="alert-top">
+                      <strong>{event.kind}</strong>
+                      <span>{event.severity}</span>
                     </div>
-                    <p>{policy.description}</p>
-                    <small>{policy.rule}</small>
+                    <p>{event.detail}</p>
                   </article>
                 ))}
               </div>
@@ -960,32 +929,30 @@ export default function App() {
           </section>
         )}
 
-        {page === 'simulator' && (
+        {route === '/login' && (
           <section className="page-grid">
             <div className="panel">
               <div className="section-head">
                 <div>
-                  <p className="eyebrow">Demo Identities</p>
-                  <h2>Choose a user quickly</h2>
+                  <p className="eyebrow">Demo Presets</p>
+                  <h2>Choose a user identity</h2>
                 </div>
               </div>
               <div className="credential-row">
-                {state.users.map((user) => (
-                  <button className="mini-credential" key={user.id} onClick={() => applyDemoIdentity(user.email, user.password, user.role)} type="button">
-                    {user.role}
+                {(['student', 'teacher', 'admin'] as Role[]).map((role) => (
+                  <button className="mini-credential" key={role} onClick={() => applyDemoPreset(role)} type="button">
+                    {role}
                   </button>
                 ))}
               </div>
-              <div className="helper-copy">
-                Use `admin` to show strict controls, or change the location/device fields below to trigger a challenge.
-              </div>
+              <div className="helper-copy">Start with `admin`, then change location or device to prove enforcement.</div>
             </div>
 
             <div className="panel">
               <div className="section-head">
                 <div>
-                  <p className="eyebrow">Login Simulation</p>
-                  <h2>Adaptive access request</h2>
+                  <p className="eyebrow">Authentication</p>
+                  <h2>Risk-aware login flow</h2>
                 </div>
               </div>
               <div className="form-grid">
@@ -999,8 +966,8 @@ export default function App() {
                   <input className="input" type="number" min="0" max="23" value={loginForm.loginHour} onChange={(e) => setLoginForm({ ...loginForm, loginHour: e.target.value })} />
                   <input className="input" type="number" min="0" max="100" value={loginForm.behaviorScore} onChange={(e) => setLoginForm({ ...loginForm, behaviorScore: e.target.value })} />
                 </div>
-                <select className="input" value={loginForm.requestedZone} onChange={(e) => setLoginForm({ ...loginForm, requestedZone: e.target.value as ZonePolicy['key'] })}>
-                  {state.zonePolicies.map((policy) => (
+                <select className="input" value={loginForm.requestedZone} onChange={(e) => setLoginForm({ ...loginForm, requestedZone: e.target.value as ZoneKey })}>
+                  {state.policies.map((policy) => (
                     <option key={policy.key} value={policy.key}>
                       {policy.zone}
                     </option>
@@ -1011,7 +978,7 @@ export default function App() {
                   <span>Zero Trust mode enabled</span>
                 </label>
                 <button className="primary-button" onClick={handleLogin} type="button">
-                  Run login flow
+                  Request access
                 </button>
               </div>
             </div>
@@ -1019,8 +986,8 @@ export default function App() {
             <div className="panel wide-panel">
               <div className="section-head">
                 <div>
-                  <p className="eyebrow">Session Results</p>
-                  <h2>Show the professor exactly what the system decided</h2>
+                  <p className="eyebrow">Access Decision</p>
+                  <h2>Show identity, context, and policy enforcement</h2>
                 </div>
               </div>
               {currentSession ? (
@@ -1057,50 +1024,235 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className="inline-actions">
-                    <button className="ghost-button" onClick={() => callProtectedZone('student')} type="button">
-                      Test student API
-                    </button>
-                    <button className="ghost-button" onClick={() => callProtectedZone('admin')} type="button">
-                      Test admin API
-                    </button>
-                    <button className="ghost-button" onClick={() => recheckSession('stable')} type="button">
-                      Healthy recheck
-                    </button>
-                    <button className="ghost-button" onClick={() => recheckSession('ip_shift')} type="button">
-                      Simulate IP shift
-                    </button>
-                    <button className="ghost-button" onClick={() => recheckSession('behavior_anomaly')} type="button">
-                      Behavior anomaly
-                    </button>
-                  </div>
-
                   <div className="status-banner">
-                    <strong>Protected route result</strong>
-                    <p>{protectedResult || 'Use the buttons above to simulate API access and continuous-auth checks.'}</p>
+                    <strong>Decision stream</strong>
+                    <p>{decisionStream}</p>
                   </div>
                 </div>
               ) : (
                 <div className="empty-state">
-                  <h3>No session yet</h3>
-                  <p>Run a login flow first, then show MFA, API access, and continuous authentication.</p>
+                  <h3>No active session</h3>
+                  <p>Run a login flow first. The result card will explain why access was allowed, challenged, or blocked.</p>
                 </div>
               )}
             </div>
           </section>
         )}
 
-        {page === 'dashboard' && (
+        {route === '/dashboard' && (
+          <section className="page-grid">
+            <div className="panel">
+              <div className="section-head">
+                <div>
+                  <p className="eyebrow">Protected Student Zone</p>
+                  <h2>Academic dashboard</h2>
+                </div>
+              </div>
+              <div className="feature-list">
+                {[
+                  'Assignments and coursework',
+                  'Attendance records',
+                  'Internal student resources',
+                ].map((item) => (
+                  <article className="feature-row" key={item}>
+                    <strong>{item}</strong>
+                  </article>
+                ))}
+              </div>
+            </div>
+
+            <div className="panel">
+              <div className="section-head">
+                <div>
+                  <p className="eyebrow">Protected Resource Tests</p>
+                  <h2>Prove route and policy enforcement</h2>
+                </div>
+              </div>
+              <div className="inline-actions">
+                <button className="ghost-button" onClick={() => testProtectedZone('student')} type="button">
+                  Test student resource
+                </button>
+                <button className="ghost-button" onClick={() => testProtectedZone('admin')} type="button">
+                  Try admin resource
+                </button>
+                <button className="ghost-button" onClick={() => recheckSession('ip_shift')} type="button">
+                  Simulate IP shift
+                </button>
+                <button className="ghost-button" onClick={() => recheckSession('behavior_anomaly')} type="button">
+                  Simulate behavior anomaly
+                </button>
+              </div>
+              <div className="status-banner">
+                <strong>Response</strong>
+                <p>{protectedResult || 'Use the actions above to show policy checks and continuous verification.'}</p>
+              </div>
+            </div>
+
+            <div className="panel wide-panel">
+              <div className="section-head">
+                <div>
+                  <p className="eyebrow">Why This Matters</p>
+                  <h2>This page is segmented from admin by policy</h2>
+                </div>
+              </div>
+              <div className="roadmap-list">
+                {[
+                  'Students can use this page after successful validation.',
+                  'Teachers may also access student-facing tools when policy allows it.',
+                  'Direct access to the admin zone is still separately protected.',
+                ].map((item) => (
+                  <article className="roadmap-card" key={item}>
+                    <strong>{item}</strong>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {route === '/admin' && (
+          <section className="page-grid">
+            <div className="panel">
+              <div className="section-head">
+                <div>
+                  <p className="eyebrow">Admin Control Plane</p>
+                  <h2>Strictly segmented privileged zone</h2>
+                </div>
+              </div>
+              <div className="feature-list">
+                {[
+                  'Identity configuration',
+                  'Token and session controls',
+                  'Security analytics and audit settings',
+                ].map((item) => (
+                  <article className="feature-row" key={item}>
+                    <strong>{item}</strong>
+                  </article>
+                ))}
+              </div>
+            </div>
+
+            <div className="panel">
+              <div className="section-head">
+                <div>
+                  <p className="eyebrow">Continuous Verification</p>
+                  <h2>Change context after login</h2>
+                </div>
+              </div>
+              <div className="inline-actions">
+                <button className="ghost-button" onClick={() => recheckSession('stable')} type="button">
+                  Healthy recheck
+                </button>
+                <button className="ghost-button" onClick={() => recheckSession('ip_shift')} type="button">
+                  IP shift
+                </button>
+                <button className="ghost-button" onClick={() => recheckSession('behavior_anomaly')} type="button">
+                  Behavior anomaly
+                </button>
+              </div>
+              <div className="status-banner">
+                <strong>Live system response</strong>
+                <p>{decisionStream}</p>
+              </div>
+            </div>
+
+            <div className="panel wide-panel">
+              <div className="section-head">
+                <div>
+                  <p className="eyebrow">Access Explanation</p>
+                  <h2>Why this page proves Zero Trust</h2>
+                </div>
+              </div>
+              <div className="roadmap-list">
+                {[
+                  'This page is not just another section; it is a separate security zone.',
+                  'Admin access depends on role, location, risk score, and MFA completion.',
+                  'A context change after login can still limit or revoke the session.',
+                ].map((item) => (
+                  <article className="roadmap-card" key={item}>
+                    <strong>{item}</strong>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {route === '/attack-lab' && (
+          <section className="page-grid">
+            <div className="panel">
+              <div className="section-head">
+                <div>
+                  <p className="eyebrow">Attack Lab</p>
+                  <h2>Show failure and protection side by side</h2>
+                </div>
+              </div>
+              <div className="attack-controls">
+                <select className="input" value={selectedAttack} onChange={(e) => setSelectedAttack(e.target.value)}>
+                  {attackOptions.map((item) => (
+                    <option key={item.key} value={item.key}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+                <label className="toggle">
+                  <input checked={attackMode} onChange={(e) => setAttackMode(e.target.checked)} type="checkbox" />
+                  <span>{attackMode ? 'Zero Trust ON' : 'Zero Trust OFF'}</span>
+                </label>
+                <button className="primary-button" onClick={runAttack} type="button">
+                  Run simulation
+                </button>
+              </div>
+
+              {attackResult ? (
+                <div className={`attack-result ${attackResult.prevented ? 'safe' : 'breach'}`}>
+                  <div className="attack-top">
+                    <strong>{attackResult.type}</strong>
+                    <span>{attackResult.prevented ? 'Blocked' : 'Compromised'}</span>
+                  </div>
+                  <p>{attackResult.detail}</p>
+                </div>
+              ) : (
+                <div className="empty-state">
+                  <h3>No simulation yet</h3>
+                  <p>Run a scenario with Zero Trust ON and OFF to create the strongest contrast.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="panel">
+              <div className="section-head">
+                <div>
+                  <p className="eyebrow">Attack Results</p>
+                  <h2>Latest comparisons</h2>
+                </div>
+              </div>
+              <div className="comparison-stack">
+                {state.attacks.map((item) => (
+                  <article className="comparison-card" key={item.id}>
+                    <div className="comparison-top">
+                      <strong>{item.type}</strong>
+                      <span className={item.prevented ? 'good' : 'bad'}>{item.prevented ? 'Prevented' : 'Compromised'}</span>
+                    </div>
+                    <p>{item.detail}</p>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {route === '/logs' && (
           <section className="page-grid">
             <div className="panel">
               <div className="section-head">
                 <div>
                   <p className="eyebrow">Login Analytics</p>
-                  <h2>Successful vs failed requests</h2>
+                  <h2>Successful vs failed access</h2>
                 </div>
               </div>
               <div className="bar-chart">
-                {state.charts.loginActivity.map((entry) => (
+                {loginChart.map((entry) => (
                   <div className="bar-group" key={entry.label}>
                     <div className="bar-stack">
                       <div className="bar success" style={{ height: `${entry.success * 6}px` }} />
@@ -1116,11 +1268,11 @@ export default function App() {
               <div className="section-head">
                 <div>
                   <p className="eyebrow">Risk Distribution</p>
-                  <h2>Population risk posture</h2>
+                  <h2>Observed session posture</h2>
                 </div>
               </div>
               <div className="distribution-list">
-                {state.charts.riskDistribution.map((entry) => (
+                {riskChart.map((entry) => (
                   <div className="distribution-row" key={entry.label}>
                     <span>{entry.label}</span>
                     <div className="distribution-track">
@@ -1135,19 +1287,19 @@ export default function App() {
             <div className="panel">
               <div className="section-head">
                 <div>
-                  <p className="eyebrow">Device Trust</p>
-                  <h2>Tracked devices</h2>
+                  <p className="eyebrow">Device Inventory</p>
+                  <h2>Tracked trust state</h2>
                 </div>
               </div>
               <div className="device-stack">
-                {state.deviceRecords.map((device) => (
+                {state.devices.map((device) => (
                   <article className="device-card" key={`${device.userId}-${device.deviceId}`}>
                     <div className="device-top">
                       <strong>{device.deviceId}</strong>
                       <span className={device.trusted ? 'good' : 'bad'}>{device.trusted ? 'Trusted' : 'Unknown'}</span>
                     </div>
                     <p>{device.location}</p>
-                    <small>Last used at {shortTime(device.lastUsed)}</small>
+                    <small>Last used at {readableTime(device.lastUsed)}</small>
                   </article>
                 ))}
               </div>
@@ -1156,12 +1308,12 @@ export default function App() {
             <div className="panel wide-panel">
               <div className="section-head">
                 <div>
-                  <p className="eyebrow">Live Feed</p>
-                  <h2>Recent security events</h2>
+                  <p className="eyebrow">Security Logs</p>
+                  <h2>System visibility and proof of intelligence</h2>
                 </div>
               </div>
               <div className="log-table">
-                {state.recentEvents.map((event) => (
+                {state.events.map((event) => (
                   <article className="log-row" key={event.id}>
                     <div>
                       <strong>{event.kind}</strong>
@@ -1172,147 +1324,6 @@ export default function App() {
                     <span className={`status-pill ${event.result}`}>{event.result}</span>
                   </article>
                 ))}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {page === 'attacks' && (
-          <section className="page-grid">
-            <div className="panel">
-              <div className="section-head">
-                <div>
-                  <p className="eyebrow">Attack Lab</p>
-                  <h2>Without Zero Trust vs with Zero Trust</h2>
-                </div>
-              </div>
-              <div className="attack-controls">
-                <select className="input" value={selectedAttack} onChange={(e) => setSelectedAttack(e.target.value)}>
-                  {attackOptions.map((item) => (
-                    <option key={item.key} value={item.key}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-                <label className="toggle">
-                  <input checked={attackMode} onChange={(e) => setAttackMode(e.target.checked)} type="checkbox" />
-                  <span>{attackMode ? 'Zero Trust ON' : 'Zero Trust OFF'}</span>
-                </label>
-                <button className="primary-button" onClick={runAttackSimulation} type="button">
-                  Run attack
-                </button>
-              </div>
-
-              {attackResult ? (
-                <div className={`attack-result ${attackResult.prevented ? 'safe' : 'breach'}`}>
-                  <div className="attack-top">
-                    <strong>{attackResult.type}</strong>
-                    <span>{attackResult.prevented ? 'Blocked' : 'Compromised'}</span>
-                  </div>
-                  <p>{attackResult.detail}</p>
-                </div>
-              ) : (
-                <div className="empty-state">
-                  <h3>No attack run yet</h3>
-                  <p>Run one scenario with Zero Trust ON, then OFF, to show the contrast clearly.</p>
-                </div>
-              )}
-            </div>
-
-            <div className="panel">
-              <div className="section-head">
-                <div>
-                  <p className="eyebrow">Recorded Outcomes</p>
-                  <h2>Latest comparisons</h2>
-                </div>
-              </div>
-              <div className="comparison-stack">
-                {state.attackResults.map((item) => (
-                  <article className="comparison-card" key={item.id}>
-                    <div className="comparison-top">
-                      <strong>{item.type}</strong>
-                      <span className={item.prevented ? 'good' : 'bad'}>{item.prevented ? 'Prevented' : 'Compromised'}</span>
-                    </div>
-                    <p>{item.detail}</p>
-                  </article>
-                ))}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {page === 'presentation' && (
-          <section className="page-grid">
-            <div className="panel story-panel">
-              <div className="section-head">
-                <div>
-                  <p className="eyebrow">What To Tell Your Professor</p>
-                  <h2>A clean 5-step demo script</h2>
-                </div>
-              </div>
-              <div className="roadmap-list">
-                {[
-                  '1. Start on Home: explain that Zero Trust means never trust, always verify.',
-                  '2. Open Architecture: show the five layers and micro-segmentation zones.',
-                  '3. Open Live Simulator: log in as admin with normal values to show successful controlled access.',
-                  '4. Change device or location: run login again to trigger MFA or a block due to risk scoring.',
-                  '5. Open Attack Lab: run the same attack with Zero Trust ON and OFF to show the difference.',
-                ].map((step) => (
-                  <article className="roadmap-card" key={step}>
-                    <strong>{step}</strong>
-                  </article>
-                ))}
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="section-head">
-                <div>
-                  <p className="eyebrow">Best Demo Trick</p>
-                  <h2>How to make the website feel alive</h2>
-                </div>
-              </div>
-              <div className="feature-list">
-                {[
-                  'Use the admin profile first so your rules look strict and meaningful.',
-                  'Then change the location from Bengaluru to Dubai to force a high-risk block.',
-                  'After that, switch to student and try the admin API to show RBAC denial.',
-                  'Finally, simulate IP shift after login to demonstrate continuous authentication.',
-                ].map((item) => (
-                  <article className="feature-row" key={item}>
-                    <strong>{item}</strong>
-                  </article>
-                ))}
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="section-head">
-                <div>
-                  <p className="eyebrow">One-Sentence Pitch</p>
-                  <h2>Say this clearly</h2>
-                </div>
-              </div>
-              <div className="status-banner">
-                <p>
-                  Traditional systems trust users after login. My project continuously evaluates identity, device,
-                  location, behavior, and requested resource, then dynamically adjusts access in real time.
-                </p>
-              </div>
-            </div>
-
-            <div className="panel">
-              <div className="section-head">
-                <div>
-                  <p className="eyebrow">Current Demo Status</p>
-                  <h2>Ready to present</h2>
-                </div>
-              </div>
-              <div className="status-banner">
-                <p>
-                  This version is multi-page, interactive, and self-contained, so you can present it even if a backend
-                  service is unavailable.
-                </p>
               </div>
             </div>
           </section>
